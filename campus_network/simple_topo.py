@@ -58,7 +58,7 @@ def configure_network(net):
     """配置网络路由和访问控制"""
     info("*** 配置网络\n")
 
-    core = net.get("core")
+    core = net.get("s0")
 
     # 启用 IP 转发
     core.cmd("sysctl -w net.ipv4.ip_forward=1")
