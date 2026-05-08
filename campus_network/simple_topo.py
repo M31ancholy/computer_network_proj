@@ -19,7 +19,7 @@ class SimpleCampusTopo(Topo):
 
     def build(self):
         # 核心交换机
-        core = self.addSwitch("core")
+        core = self.addSwitch("s0")
 
         # 部门交换机
         dorm_sw = self.addSwitch("s1")  # 学生宿舍
