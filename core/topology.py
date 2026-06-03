@@ -39,13 +39,13 @@ class CampusNetworkTopo(Topo):
         dorm_switch = self.addSwitch("dorm_sw", dpid="0000000000000010")
 
         # 教学楼区 - VLAN 20
-        teaching_switch = self.addSwitch("teaching_sw", dpid="0000000000000020")
+        teaching_switch = self.addSwitch("teach_sw", dpid="0000000000000020")
 
         # 图书馆区 - VLAN 30
-        library_switch = self.addSwitch("library_sw", dpid="0000000000000030")
+        library_switch = self.addSwitch("lib_sw", dpid="0000000000000030")
 
         # 办公楼区 - VLAN 40
-        office_switch = self.addSwitch("office_sw", dpid="0000000000000040")
+        office_switch = self.addSwitch("offi_sw", dpid="0000000000000040")
 
         # 人事处 - VLAN 50 (受限访问)
         hr_switch = self.addSwitch("hr_sw", dpid="0000000000000050")
@@ -54,7 +54,7 @@ class CampusNetworkTopo(Topo):
         finance_switch = self.addSwitch("finance_sw", dpid="0000000000000060")
 
         # 服务器区 - VLAN 100
-        server_switch = self.addSwitch("server_sw", dpid="0000000000000100")
+        server_switch = self.addSwitch("srv_sw", dpid="0000000000000100")
 
         # ==================== 接入层 - 主机 ====================
         # 学生宿舍主机
