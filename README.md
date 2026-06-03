@@ -61,13 +61,13 @@ uv sync
 ### 运行简化版（推荐首次运行）
 
 ```bash
-sudo uv run python campus_network/simple_topo.py
+sudo uv run python core/simple_topo.py
 ```
 
 ### 运行完整版
 
 ```bash
-sudo uv run python campus_network/topology.py
+sudo uv run python core/topology.py
 ```
 
 ## Mininet CLI 常用命令
