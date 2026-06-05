@@ -14,7 +14,7 @@ from mininet.node import Host, OVSController, OVSKernelSwitch
 from mininet.topo import Topo
 from mininet.util import dumpNodeConnections
 
-from core.linux_router import LinuxRouter
+from linux_router import LinuxRouter
 
 
 class CampusNetworkRouterTopo(Topo):
