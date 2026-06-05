@@ -11,7 +11,8 @@ topology_vpn.py while keeping c as a real Linux router.
 import time
 
 from mininet.cli import CLI
-from mininet.examples.linuxrouter import LinuxRouter
+# from mininet.examples.linuxrouter import LinuxRouter
+from linux_router import LinuxRouter
 from mininet.log import info, setLogLevel
 from mininet.net import Mininet
 from mininet.node import Host, OVSController, OVSKernelSwitch
