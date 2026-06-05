@@ -368,7 +368,7 @@ def test_connectivity(net, vpn_enabled):
     blocked = "100% packet loss" in result or "0 received" in result
     info(f"Dorm -> HR: {'blocked as expected' if blocked else 'unexpectedly allowed'}\n")
 
-    result = d1.cmd("ping fn1")
+    result = d1.cmd("ping -c 2 -W 1 10.0.60.1")
     blocked = "100% packet loss" in result or "0 received" in result
     info(f"Dorm -> Finance: {'blocked as expected' if blocked else 'unexpectedly allowed'}\n")
 
