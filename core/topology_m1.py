@@ -2,7 +2,7 @@
 """
 Campus network topology with a Linux router as the core node.
 
-This variant keeps the same department/server layout as topology.py, but
+This variant keeps the same department/server layout as topology_m1.py, but
 uses host c as the real layer-3 router for inter-department routing and ACLs.
 """
 # 模拟了路由器的实现

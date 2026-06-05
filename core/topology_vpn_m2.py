@@ -2,8 +2,8 @@
 """
 Campus network topology with a Linux core router and VPN access.
 
-This variant extends topology.py with the VPN-side topology from
-topology_vpn.py while keeping c as a real Linux router.
+This variant extends topology_m1.py with the VPN-side topology from
+topology_vpn_m2.py while keeping c as a real Linux router.
 """
 
 # 在满足课程要求的情况下完成了OpenVPN的外部接入
@@ -11,7 +11,8 @@ topology_vpn.py while keeping c as a real Linux router.
 import time
 
 from mininet.cli import CLI
-from mininet.examples.linuxrouter import LinuxRouter
+# from mininet.examples.linuxrouter import LinuxRouter
+from linux_router import LinuxRouter
 from mininet.log import info, setLogLevel
 from mininet.net import Mininet
 from mininet.node import Host, OVSController, OVSKernelSwitch
@@ -22,13 +23,9 @@ from mininet.util import dumpNodeConnections
 COMMAND_CHECKS = {
     "iptables": "command -v iptables",
     "openvpn": "command -v openvpn",
-    "ntopng": "command -v ntopng",
-    "redis-server": "command -v redis-server",
 }
 COMMAND_ERRORS = {
     "iptables": "Missing iptables; install it with: sudo apt install iptables",
-    "ntopng": "Missing ntopng; install it with: sudo apt install ntopng",
-    "redis-server": "Missing redis-server; install it with: sudo apt install redis-server",
 }
 
 
@@ -327,113 +324,6 @@ def configure_vpn(net):
     return True
 
 
-def start_ntopng_monitor(node, interfaces, label, web_port, data_dir, redis_dir):
-    """Start Redis and ntopng inside a Mininet node namespace."""
-    info(f"*** Starting {label} flow monitor (ntopng)\n")
-
-    ntopng = optional_cmd(node, "ntopng")
-    redis_server = optional_cmd(node, "redis-server")
-
-    if not ntopng:
-        info("!!! Missing ntopng; install it with: sudo apt install ntopng\n")
-        return False
-    if not redis_server:
-        info("!!! Missing redis-server; install it with: sudo apt install redis-server\n")
-        return False
-
-    node.cmd(
-        f"pgrep -a ntopng | while read -r ntopng_pid ntopng_cmd; do "
-        f'case "$ntopng_cmd" in *"--data-dir {data_dir}"*) kill "$ntopng_pid" || true ;; esac; '
-        "done"
-    )
-    node.cmd(
-        f"if [ -f {redis_dir}/redis.pid ]; then "
-        f"redis_pid=$(cat {redis_dir}/redis.pid); "
-        f'if pgrep -a redis-server | grep -q "^$redis_pid " '
-        f'&& [ "$(readlink /proc/$redis_pid/cwd 2>/dev/null)" = "{redis_dir}" ]; then '
-        "kill $redis_pid || true; "
-        "fi; "
-        "fi"
-    )
-    node.cmd(f"rm -rf {data_dir} {redis_dir}")
-    node.cmd(f"mkdir -p {data_dir} {redis_dir}")
-
-    redis_cmd = (
-        f"(cd {redis_dir} && exec {redis_server} --bind 127.0.0.1 --port 6379 "
-        f"--dir {redis_dir} --dbfilename dump.rdb --pidfile {redis_dir}/redis.pid) "
-        f"> {redis_dir}/redis.log 2>&1 & echo $! > {redis_dir}/redis.pid"
-    )
-    node.cmd(redis_cmd)
-    time.sleep(1)
-
-    intf_args = " ".join(f"-i {intf}" for intf in interfaces)
-    ntopng_cmd = (
-        f"{ntopng} {intf_args} -w 0.0.0.0:{web_port} -r 127.0.0.1:6379 "
-        f"--data-dir {data_dir} --disable-login 1 "
-        f"> {data_dir}/ntopng.log 2>&1 &"
-    )
-    node.cmd(ntopng_cmd)
-    time.sleep(2)
-
-    if data_dir not in node.cmd("pgrep -a ntopng || true"):
-        info(f"!!! ntopng did not start; check {label} cat {data_dir}/ntopng.log\n")
-        return False
-
-    info(f"ntopng {label} is monitoring: " + ", ".join(interfaces) + "\n")
-    info(f"ntopng {label} web UI listens on port {web_port}\n")
-    return True
-
-
-def start_flow_monitor(net, vpn_enabled):
-    """Start Redis and ntopng inside the VPN namespace."""
-    vpn = net.get("vpn")
-
-    interfaces = ["vpn-eth0", "vpn-eth1"]
-    if vpn_enabled and "tun0" in vpn.cmd("ip -o link show tun0 2>/dev/null"):
-        interfaces.insert(0, "tun0")
-    else:
-        info("!!! tun0 is unavailable; ntopng will monitor vpn-eth0 and vpn-eth1 only\n")
-
-    started = start_ntopng_monitor(
-        vpn,
-        interfaces,
-        label="vpn",
-        web_port=3000,
-        data_dir="/tmp/mininet-vpn-ntopng",
-        redis_dir="/tmp/mininet-vpn-redis",
-    )
-    if started:
-        info("To open VPN ntopng from the host, run in another terminal:\n")
-        info("  sudo ip addr add 203.0.113.254/24 dev is 2>/dev/null || true\n")
-        info("  sudo ip link set is up\n")
-        info("Then browse: http://203.0.113.1:3000\n")
-        info("From Mininet CLI, test with: ex curl http://203.0.113.1:3000\n")
-    return started
-
-
-def start_core_flow_monitor(net):
-    """Start Redis and ntopng inside the core router namespace."""
-    core = net.get("c")
-
-    return start_ntopng_monitor(
-        core,
-        [
-            "c-eth0",
-            "c-eth1",
-            "c-eth2",
-            "c-eth3",
-            "c-eth4",
-            "c-eth5",
-            "c-eth6",
-            "c-eth7",
-        ],
-        label="core router",
-        web_port=3001,
-        data_dir="/tmp/mininet-core-ntopng",
-        redis_dir="/tmp/mininet-core-redis",
-    )
-
-
 def start_services(net):
     """Start Web and FTP services."""
     info("*** Starting network services\n")
@@ -526,8 +416,6 @@ def run():
         configure_acl(net)
         start_services(net)
         vpn_enabled = configure_vpn(net)
-        start_flow_monitor(net, vpn_enabled)
-        start_core_flow_monitor(net)
         test_connectivity(net, vpn_enabled)
 
         info("*** Entering Mininet CLI\n")

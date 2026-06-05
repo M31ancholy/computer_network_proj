@@ -78,19 +78,19 @@ sudo uv run python <拓扑脚本路径>
 推荐优先运行 LinuxRouter 版本，因为它的核心节点 `c` 是真正的 Linux 三层路由器：
 
 ```bash
-sudo uv run python core/topology.py
+sudo uv run python core/topology_m1.py
 ```
 
 运行带 VPN 外部接入的版本：
 
 ```bash
-sudo uv run python core/topology_vpn.py
+sudo uv run python core/topology_vpn_m2.py
 ```
 
 运行原始 OVS 核心交换机版本：
 
 ```bash
-sudo uv run python core/topology.py
+sudo uv run python core/topology_m1.py
 ```
 
 脚本启动后会进入 Mininet CLI。退出 CLI 时输入：

@@ -2,7 +2,7 @@
 """
 Campus network topology with VPN access and Darkstat monitoring.
 
-This variant reuses topology_vpn.py and starts Darkstat inside the core
+This variant reuses topology_vpn_m2.py and starts Darkstat inside the core
 router namespace to monitor all traffic visible on c.
 """
 
@@ -14,7 +14,7 @@ from mininet.net import Mininet
 from mininet.node import OVSController, OVSKernelSwitch
 from mininet.util import dumpNodeConnections
 
-from topology_vpn import (
+from topology_vpn_m2 import (
     CampusNetworkRouterVpnTopo,
     configure_acl,
     configure_l2_switches,
