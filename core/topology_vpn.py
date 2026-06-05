@@ -2,7 +2,7 @@
 """
 Campus network topology with a Linux core router and VPN access.
 
-This variant extends topology_router.py with the VPN-side topology from
+This variant extends topology.py with the VPN-side topology from
 topology_vpn.py while keeping c as a real Linux router.
 """
 

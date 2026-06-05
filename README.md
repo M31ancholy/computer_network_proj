@@ -77,13 +77,13 @@ sudo uv run python <拓扑脚本路径>
 推荐优先运行 LinuxRouter 版本，因为它的核心节点 `c` 是真正的 Linux 三层路由器：
 
 ```bash
-sudo uv run python core/topology_router.py
+sudo uv run python core/topology.py
 ```
 
 运行带 VPN 外部接入的版本：
 
 ```bash
-sudo uv run python core/topology_router_vpn.py
+sudo uv run python core/topology_vpn.py
 ```
 
 运行原始 OVS 核心交换机版本：
