@@ -61,6 +61,7 @@ sudo apt-get install -y mininet openvswitch-switch iptables
 
 # 如果要运行 VPN 版本的真实 OpenVPN 隧道，再安装 openvpn
 sudo apt-get install -y openvpn
+sudo apt-get install darkstat
 
 # 安装 Python 依赖
 uv sync
