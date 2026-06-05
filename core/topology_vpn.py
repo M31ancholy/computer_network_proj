@@ -198,23 +198,100 @@ def configure_routing(net):
         core.cmd(f"ip link set {intf} up")
 
 
+# def configure_acl(net):
+#     """配置校园网访问控制。"""
+#     info("*** 配置访问控制 ACL\n")
+#
+#     core = net.get("c")
+#     core.cmd("iptables -F")
+#     core.cmd("iptables -X")
+#     core.cmd("iptables -P FORWARD ACCEPT")
+#     core.cmd("iptables -A FORWARD -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT")
+#
+#
+#
+#     core.cmd("iptables -A FORWARD -s 10.0.50.0/24 -j ACCEPT")
+#     core.cmd("iptables -A FORWARD -d 10.0.50.0/24 -s 10.0.40.0/24 -j ACCEPT")
+#     core.cmd("iptables -A FORWARD -d 10.0.50.0/24 -j DROP")
+#
+#     core.cmd("iptables -A FORWARD -s 10.0.60.0/24 -j ACCEPT")
+#     core.cmd("iptables -A FORWARD -d 10.0.60.0/24 -s 10.0.40.0/24 -j ACCEPT")
+#     core.cmd("iptables -A FORWARD -d 10.0.60.0/24 -j DROP")
+
 def configure_acl(net):
     """配置校园网访问控制。"""
     info("*** 配置访问控制 ACL\n")
 
     core = net.get("c")
+
+    # 清空旧规则
     core.cmd("iptables -F")
     core.cmd("iptables -X")
+    core.cmd("iptables -t nat -F")
+
+    # 默认允许转发，保证普通部门之间三层互通
     core.cmd("iptables -P FORWARD ACCEPT")
+
+    # 清理连接跟踪，避免之前 ping 成功导致后面被 ESTABLISHED 放行
+    core.cmd("conntrack -F 2>/dev/null || true")
+
+    # 允许已经建立的连接返回
     core.cmd("iptables -A FORWARD -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT")
 
-    core.cmd("iptables -A FORWARD -s 10.0.50.0/24 -j ACCEPT")
-    core.cmd("iptables -A FORWARD -d 10.0.50.0/24 -s 10.0.40.0/24 -j ACCEPT")
+    # =========================
+    # 所有用户访问 Web/FTP 服务器
+    # =========================
+    core.cmd("iptables -A FORWARD -d 10.0.100.10 -p tcp --dport 80 -j ACCEPT")
+    core.cmd("iptables -A FORWARD -d 10.0.100.20 -p tcp --dport 21 -j ACCEPT")
+
+    # 如果 FTP 使用被动模式，简单实验可以直接允许访问服务器区
+    core.cmd("iptables -A FORWARD -d 10.0.100.0/24 -j ACCEPT")
+
+    # =========================
+    # 人事处访问控制
+    # 人事处网段：10.0.50.0/24
+    # 只允许办公楼访问
+    # =========================
+
+    # 允许办公楼访问人事处
+    core.cmd("iptables -A FORWARD -s 10.0.40.0/24 -d 10.0.50.0/24 -j ACCEPT")
+
+    # 禁止学生宿舍访问人事处
+    core.cmd("iptables -A FORWARD -s 10.0.10.0/24 -d 10.0.50.0/24 -j DROP")
+
+    # 禁止教学楼访问人事处
+    core.cmd("iptables -A FORWARD -s 10.0.20.0/24 -d 10.0.50.0/24 -j DROP")
+
+    # 禁止图书馆访问人事处
+    core.cmd("iptables -A FORWARD -s 10.0.30.0/24 -d 10.0.50.0/24 -j DROP")
+
+    # 其他未授权区域访问人事处也拒绝
     core.cmd("iptables -A FORWARD -d 10.0.50.0/24 -j DROP")
 
-    core.cmd("iptables -A FORWARD -s 10.0.60.0/24 -j ACCEPT")
-    core.cmd("iptables -A FORWARD -d 10.0.60.0/24 -s 10.0.40.0/24 -j ACCEPT")
+    # =========================
+    # 财务处访问控制
+    # 财务处网段：10.0.60.0/24
+    # 只允许办公楼访问
+    # =========================
+
+    # 允许办公楼访问财务处
+    core.cmd("iptables -A FORWARD -s 10.0.40.0/24 -d 10.0.60.0/24 -j ACCEPT")
+
+    # 禁止学生宿舍访问财务处
+    core.cmd("iptables -A FORWARD -s 10.0.10.0/24 -d 10.0.60.0/24 -j DROP")
+
+    # 禁止教学楼访问财务处
+    core.cmd("iptables -A FORWARD -s 10.0.20.0/24 -d 10.0.60.0/24 -j DROP")
+
+    # 禁止图书馆访问财务处
+    core.cmd("iptables -A FORWARD -s 10.0.30.0/24 -d 10.0.60.0/24 -j DROP")
+
+    # 其他未授权区域访问财务处也拒绝
     core.cmd("iptables -A FORWARD -d 10.0.60.0/24 -j DROP")
+
+    # 打印 ACL，方便检查
+    info(core.cmd("iptables -vnL FORWARD --line-numbers"))
+
 
 
 def configure_vpn(net):
