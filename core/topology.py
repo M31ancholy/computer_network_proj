@@ -8,6 +8,8 @@
 4. 人事处、财务处访问控制
 """
 
+# 这是第一个版本能用的 但是路由器的实现有点太简陋了，该版本仅用于存档
+
 from mininet.topo import Topo
 from mininet.net import Mininet
 from mininet.node import Controller, OVSKernelSwitch, Host
