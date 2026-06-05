@@ -368,7 +368,7 @@ def start_ntopng_monitor(node, interfaces, label, web_port, data_dir, redis_dir)
 
     intf_args = " ".join(f"-i {intf}" for intf in interfaces)
     ntopng_cmd = (
-        f"{ntopng} {intf_args} -w {web_port} -r 127.0.0.1:6379 "
+        f"{ntopng} {intf_args} -w 0.0.0.0:{web_port} -r 127.0.0.1:6379 "
         f"--data-dir {data_dir} --disable-login 1 "
         f"> {data_dir}/ntopng.log 2>&1 &"
     )
