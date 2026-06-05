@@ -368,6 +368,10 @@ def test_connectivity(net, vpn_enabled):
     blocked = "100% packet loss" in result or "0 received" in result
     info(f"Dorm -> HR: {'blocked as expected' if blocked else 'unexpectedly allowed'}\n")
 
+    result = d1.cmd("ping fn1")
+    blocked = "100% packet loss" in result or "0 received" in result
+    info(f"Dorm -> Finance: {'blocked as expected' if blocked else 'unexpectedly allowed'}\n")
+
     result = o1.cmd("ping -c 2 -W 1 10.0.50.1")
     info(f"Office -> HR: {'success' if '0% packet loss' in result else 'failed'}\n")
 
@@ -412,14 +416,6 @@ def run():
         test_connectivity(net, vpn_enabled)
 
         info("*** Entering Mininet CLI\n")
-        info("Useful commands:\n")
-        info("  d1 ping t1\n")
-        info("  d1 curl 10.0.100.10\n")
-        info("  o1 ping hr1\n")
-        info("  d1 ping hr1\n")
-        info("  ex ping 203.0.113.1\n")
-        info("  ex ping 10.8.0.1\n")
-        info("  ex curl 10.0.100.10\n")
         info("  exit\n\n")
 
         CLI(net)
