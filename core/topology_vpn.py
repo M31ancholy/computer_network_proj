@@ -115,13 +115,13 @@ class CampusNetworkVpnTopo(Topo):
         web_server = self.addHost(
             "ws",
             ip="10.0.100.10/24",
-            mac="00:00:00:00:100:01",
+            mac="00:00:00:00:64:01",
             defaultRoute="via 10.0.100.254",
         )
         ftp_server = self.addHost(
             "fs",
             ip="10.0.100.20/24",
-            mac="00:00:00:00:100:02",
+            mac="00:00:00:00:64:02",
             defaultRoute="via 10.0.100.254",
         )
 
@@ -299,7 +299,7 @@ def start_services(net):
     ws = net.get("ws")
     ws.cmd("mkdir -p /var/www/html")
     ws.cmd('echo "<h1>Campus Web Server</h1>" > /var/www/html/index.html')
-    ws.cmd("python3 -m http.server 80 &")
+    ws.cmd("python3 -m http.server 80 --directory /var/www/html &")
 
     fs = net.get("fs")
     fs.cmd("mkdir -p /var/ftp")
