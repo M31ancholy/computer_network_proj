@@ -11,6 +11,7 @@
 from mininet.topo import Topo
 from mininet.net import Mininet
 from mininet.node import Controller, OVSKernelSwitch, Host
+from mininet.node import OVSController
 from mininet.cli import CLI
 from mininet.log import setLogLevel, info
 from mininet.util import dumpNodeConnections
@@ -250,7 +251,7 @@ def run():
 
     net = Mininet(
         topo=topo,
-        controller=Controller,
+        controller=OVSController,
         switch=OVSKernelSwitch,
         autoSetMacs=True,
         autoStaticArp=True,
