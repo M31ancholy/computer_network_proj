@@ -5,6 +5,7 @@ Campus network topology with a Linux router as the core node.
 This variant keeps the same department/server layout as topology.py, but
 uses host c as the real layer-3 router for inter-department routing and ACLs.
 """
+# 模拟了路由器的实现
 
 from mininet.cli import CLI
 from mininet.log import info, setLogLevel
