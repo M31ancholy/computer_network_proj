@@ -11,7 +11,7 @@ topology_vpn.py while keeping c as a real Linux router.
 import time
 
 from mininet.cli import CLI
-from linux_router import LinuxRouter
+from mininet.examples.linuxrouter import LinuxRouter
 from mininet.log import info, setLogLevel
 from mininet.net import Mininet
 from mininet.node import Host, OVSController, OVSKernelSwitch
@@ -325,59 +325,7 @@ def configure_vpn(net):
     ex.cmd("openvpn --config /tmp/openvpn-client.conf --daemon --log /tmp/openvpn-client.log")
     time.sleep(3)
     return True
-#
-# def start_flow_monitor(net, vpn_enabled):
-#     """Start Redis and ntopng inside the core router namespace."""
-#     info("*** Starting core router flow monitor (ntopng)\n")
-#
-#     core = net.get("c")
-#     ntopng = optional_cmd(core, "ntopng")
-#     redis_server = optional_cmd(core, "redis-server")
-#
-#     if not ntopng:
-#         info("!!! Missing ntopng; install it with: sudo apt install ntopng\n")
-#         return False
-#     if not redis_server:
-#         info("!!! Missing redis-server; install it with: sudo apt install redis-server\n")
-#         return False
-#
-#     core.cmd("pkill ntopng || true")
-#     core.cmd("pkill redis-server || true")
-#     core.cmd("rm -rf /tmp/mininet-ntopng /tmp/mininet-redis")
-#     core.cmd("mkdir -p /tmp/mininet-ntopng /tmp/mininet-redis")
-#
-#     redis_cmd = (
-#         f"{redis_server} --daemonize yes --bind 127.0.0.1 --port 6379 "
-#         "--dir /tmp/mininet-redis --dbfilename dump.rdb "
-#         "--pidfile /tmp/mininet-redis/redis.pid "
-#         "--logfile /tmp/mininet-redis/redis.log"
-#     )
-#     core.cmd(redis_cmd)
-#     time.sleep(1)
-#
-#     interfaces = ["c-eth0", "c-eth1", "c-eth2", "c-eth3",
-#                    "c-eth4", "c-eth5", "c-eth6", "c-eth7"]
-#
-#     intf_args = " ".join(f"-i {intf}" for intf in interfaces)
-#     ntopng_cmd = (
-#         f"{ntopng} {intf_args} -w 3000 -r 127.0.0.1:6379 "
-#         "--data-dir /tmp/mininet-ntopng --disable-login 1 "
-#         "> /tmp/mininet-ntopng/ntopng.log 2>&1 &"
-#     )
-#     core.cmd(ntopng_cmd)
-#     time.sleep(2)
-#
-#     if "ntopng" not in core.cmd("pgrep -a ntopng || true"):
-#         info("!!! ntopng did not start; check c cat /tmp/mininet-ntopng/ntopng.log\n")
-#         return False
-#
-#     info("ntopng is monitoring: " + ", ".join(interfaces) + "\n")
-#     info("To open ntopng from the host, run in another terminal:\n")
-#     info("  sudo ip addr add 10.0.100.253/24 dev ss 2>/dev/null || true\n")
-#     info("  sudo ip link set ss up\n")
-#     info("Then browse: http://10.0.100.254:3000\n")
-#     info("From Mininet CLI, test with: d1 curl http://10.0.100.254:3000\n")
-#     return True
+
 
 def start_flow_monitor(net, vpn_enabled):
     """Start Redis and ntopng inside the VPN namespace."""
