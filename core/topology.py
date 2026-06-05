@@ -146,10 +146,7 @@ class CampusNetworkTopo(Topo):
         self.addLink(ftp_server, server_switch)
 
 
-def configure_vlans(net):
-    """配置 VLAN 和交换机端口"""
-    info("*** 配置 VLAN 和交换机端口\n")
-
+def configure_stp(net):
     switches = ["ds", "ts", "ls", "os", "hrs", "fns", "ss"]
     for name in switches:
         sw = net.get(name)
@@ -266,7 +263,7 @@ def run():
     dumpNodeConnections(net.hosts)
 
     try:
-        configure_vlans(net)
+        configure_stp(net)
         configure_routing(net)
         configure_acl(net)
         start_services(net)
