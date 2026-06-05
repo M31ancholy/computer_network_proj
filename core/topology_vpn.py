@@ -428,7 +428,7 @@ def run():
     topo = CampusNetworkVpnTopo()
     net = Mininet(
         topo=topo,
-        controller=Controller,
+        controller=OVSController,
         switch=OVSKernelSwitch,
         autoSetMacs=True,
         autoStaticArp=True,
