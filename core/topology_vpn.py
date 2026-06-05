@@ -235,9 +235,6 @@ def configure_acl(net):
     # 清理连接跟踪，避免之前 ping 成功导致后面被 ESTABLISHED 放行
     core.cmd("conntrack -F 2>/dev/null || true")
 
-    # 允许已经建立的连接返回
-    core.cmd("iptables -A FORWARD -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT")
-
     # =========================
     # 所有用户访问 Web/FTP 服务器
     # =========================
@@ -288,6 +285,9 @@ def configure_acl(net):
 
     # 其他未授权区域访问财务处也拒绝
     core.cmd("iptables -A FORWARD -d 10.0.60.0/24 -j DROP")
+
+    # 允许已经建立的连接返回；必须放在受保护网段拒绝规则之后，避免旧连接状态绕过 ACL。
+    core.cmd("iptables -A FORWARD -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT")
 
     # 打印 ACL，方便检查
     info(core.cmd("iptables -vnL FORWARD --line-numbers"))
@@ -428,7 +428,7 @@ def run():
     topo = CampusNetworkVpnTopo()
     net = Mininet(
         topo=topo,
-        controller=OVSController,
+        controller=Controller,
         switch=OVSKernelSwitch,
         autoSetMacs=True,
         autoStaticArp=True,
