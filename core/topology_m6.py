@@ -1,14 +1,46 @@
 #!/usr/bin/env python3
 """
-Campus network topology with DHCP support (extends M5).
+Campus network topology - Milestone 6: DHCP
+基于 M5 双校区单臂路由拓扑，新增 DHCP 动态 IP 分配功能。
 
-Same dual-campus architecture as topology_m5.py, but all campus hosts
-obtain their IP addresses via DHCP (dnsmasq on router c) with static
-MAC-IP bindings, so every host always gets the same IP as before.
+架构：与 M5 相同的双校区单臂路由（Router-on-a-Stick）
+新增：
+  - 在核心路由器 c 的每个 VLAN 子接口上运行独立 dnsmasq 实例（纯 DHCP 模式）
+  - 所有普通终端主机（宿舍/教学/图书馆/办公/人事/财务）通过 DHCP 自动获取 IP
+  - 服务器区（ws, fs）和 VPN 节点（vpn, ex）保持静态 IP
 
-Architecture: Dual-campus Router-on-a-Stick (双校区单臂路由)
+                ┌──────────────────────────────────────┐
+                │           Core Router  c              │
+                │  c-eth0 (trunk-A)                     │
+                │  c-eth1 (internet/VPN)                │
+                │  c-eth2 (trunk-B)                     │
+                └────┬──────────────┬──────────────┬───┘
+                     │              │              │
+                 trunk-A        internet       trunk-B
+                     │              │              │
+                  ┌──┴──┐        ┌──┴──┐        ┌──┴──┐
+                  │  s1  │        │  is  │        │  s2  │
+                  └──┬──┘        └──┬──┘        └──┬──┘
+               A-campus hosts   vpn/ex          B-campus hosts
+
+Campus A (s1, uplink c-eth0):
+  VLAN 10  - A-Dorm      10.0.10.0/24   gw 10.0.10.254  DHCP池 .50-.150
+  VLAN 20  - A-Teaching  10.0.20.0/24   gw 10.0.20.254  DHCP池 .50-.150
+  VLAN 30  - A-Library   10.0.30.0/24   gw 10.0.30.254  DHCP池 .50-.150
+  VLAN 40  - A-Office    10.0.40.0/24   gw 10.0.40.254  DHCP池 .50-.150
+  VLAN 50  - A-HR        10.0.50.0/24   gw 10.0.50.254  DHCP池 .50-.150
+  VLAN 60  - A-Finance   10.0.60.0/24   gw 10.0.60.254  DHCP池 .50-.150
+  VLAN 100 - Server      10.0.100.0/24  gw 10.0.100.254 静态（ws/fs）
+  VLAN 200 - VPN-In      10.0.200.0/24  gw 10.0.200.254 静态（vpn）
+
+Campus B (s2, uplink c-eth2):
+  VLAN 10  - B-Dorm      10.1.10.0/24   gw 10.1.10.254  DHCP池 .50-.150
+  VLAN 20  - B-Teaching  10.1.20.0/24   gw 10.1.20.254  DHCP池 .50-.150
+  VLAN 30  - B-Library   10.1.30.0/24   gw 10.1.30.254  DHCP池 .50-.150
+  VLAN 40  - B-Office    10.1.40.0/24   gw 10.1.40.254  DHCP池 .50-.150
 """
 
+import re
 import time
 
 from mininet.cli import CLI
@@ -25,6 +57,7 @@ from linux_router import LinuxRouter
 # 规划表
 # ---------------------------------------------------------------------------
 
+# Campus A 的 VLAN 表：VLAN ID -> (描述, 网关IP/掩码)
 CAMPUS_A_VLANS = {
     10:  ("A-Dorm",     "10.0.10.254/24"),
     20:  ("A-Teaching", "10.0.20.254/24"),
@@ -36,6 +69,7 @@ CAMPUS_A_VLANS = {
     200: ("VPN-In",     "10.0.200.254/24"),
 }
 
+# Campus B 的 VLAN 表：VLAN ID -> (描述, 网关IP/掩码)
 CAMPUS_B_VLANS = {
     10:  ("B-Dorm",     "10.1.10.254/24"),
     20:  ("B-Teaching", "10.1.20.254/24"),
@@ -43,7 +77,9 @@ CAMPUS_B_VLANS = {
     40:  ("B-Office",   "10.1.40.254/24"),
 }
 
+# 主机名 -> (交换机名, VLAN ID) 映射，供 configure_switches 使用
 HOST_SWITCH_VLAN = {
+    # ── Campus A ──────────────────────────────────────
     "ad1": ("s1", 10), "ad2": ("s1", 10), "ad3": ("s1", 10),
     "at1": ("s1", 20), "at2": ("s1", 20),
     "al1": ("s1", 30),
@@ -53,35 +89,46 @@ HOST_SWITCH_VLAN = {
     "ws":   ("s1", 100),
     "fs":   ("s1", 100),
     "vpn":  ("s1", 200),
+    # ── Campus B ──────────────────────────────────────
     "bd1": ("s2", 10), "bd2": ("s2", 10),
     "bt1": ("s2", 20), "bt2": ("s2", 20),
     "bl1": ("s2", 30),
     "bo1": ("s2", 40), "bo2": ("s2", 40),
 }
 
-# DHCP 静态租约：主机名 -> (IP, MAC)
-# 每个 campus 主机通过 MAC 绑定获取固定 IP，和 m5 完全一致
-DHCP_LEASE = {
-    "ad1":  ("10.0.10.1",   "00:00:00:00:10:01"),
-    "ad2":  ("10.0.10.2",   "00:00:00:00:10:02"),
-    "ad3":  ("10.0.10.3",   "00:00:00:00:10:03"),
-    "at1":  ("10.0.20.1",   "00:00:00:00:20:01"),
-    "at2":  ("10.0.20.2",   "00:00:00:00:20:02"),
-    "al1":  ("10.0.30.1",   "00:00:00:00:30:01"),
-    "ao1":  ("10.0.40.1",   "00:00:00:00:40:01"),
-    "ao2":  ("10.0.40.2",   "00:00:00:00:40:02"),
-    "ahr1": ("10.0.50.1",   "00:00:00:00:50:01"),
-    "ahr2": ("10.0.50.2",   "00:00:00:00:50:02"),
-    "afn1": ("10.0.60.1",   "00:00:00:00:60:01"),
-    "afn2": ("10.0.60.2",   "00:00:00:00:60:02"),
-    "bd1":  ("10.1.10.1",   "00:00:00:01:10:01"),
-    "bd2":  ("10.1.10.2",   "00:00:00:01:10:02"),
-    "bt1":  ("10.1.20.1",   "00:00:00:01:20:01"),
-    "bt2":  ("10.1.20.2",   "00:00:00:01:20:02"),
-    "bl1":  ("10.1.30.1",   "00:00:00:01:30:01"),
-    "bo1":  ("10.1.40.1",   "00:00:00:01:40:01"),
-    "bo2":  ("10.1.40.2",   "00:00:00:01:40:02"),
+# ---------------------------------------------------------------------------
+# M6 新增：DHCP 配置表
+# ---------------------------------------------------------------------------
+
+# 子接口名 -> (DHCP池起始IP, DHCP池结束IP, 网关IP, 租约时间)
+# VLAN 100 (Server) 和 VLAN 200 (VPN-In) 不做 DHCP，服务器保持静态
+DHCP_RANGES = {
+    "c-eth0.10":  ("10.0.10.50",  "10.0.10.150",  "10.0.10.254",  "12h"),
+    "c-eth0.20":  ("10.0.20.50",  "10.0.20.150",  "10.0.20.254",  "12h"),
+    "c-eth0.30":  ("10.0.30.50",  "10.0.30.150",  "10.0.30.254",  "12h"),
+    "c-eth0.40":  ("10.0.40.50",  "10.0.40.150",  "10.0.40.254",  "12h"),
+    "c-eth0.50":  ("10.0.50.50",  "10.0.50.150",  "10.0.50.254",  "12h"),
+    "c-eth0.60":  ("10.0.60.50",  "10.0.60.150",  "10.0.60.254",  "12h"),
+    "c-eth2.10":  ("10.1.10.50",  "10.1.10.150",  "10.1.10.254",  "12h"),
+    "c-eth2.20":  ("10.1.20.50",  "10.1.20.150",  "10.1.20.254",  "12h"),
+    "c-eth2.30":  ("10.1.30.50",  "10.1.30.150",  "10.1.30.254",  "12h"),
+    "c-eth2.40":  ("10.1.40.50",  "10.1.40.150",  "10.1.40.254",  "12h"),
 }
+
+# 通过 DHCP 动态获取 IP 的主机列表
+# ws, fs（服务器），vpn, ex（VPN/公网）保持静态，不在此列
+DHCP_HOSTS = [
+    "ad1", "ad2", "ad3",          # A-Dorm
+    "at1", "at2",                 # A-Teaching
+    "al1",                        # A-Library
+    "ao1", "ao2",                 # A-Office
+    "ahr1", "ahr2",               # A-HR
+    "afn1", "afn2",               # A-Finance
+    "bd1", "bd2",                 # B-Dorm
+    "bt1", "bt2",                 # B-Teaching
+    "bl1",                        # B-Library
+    "bo1", "bo2",                 # B-Office
+]
 
 
 # ---------------------------------------------------------------------------
@@ -89,64 +136,89 @@ DHCP_LEASE = {
 # ---------------------------------------------------------------------------
 class DualCampusVlanTopo(Topo):
     """
-    双校区单臂路由拓扑 — DHCP 版本。
+    双校区单臂路由拓扑（M6：终端主机改为 DHCP 动态获取 IP）。
 
-    与 M5 的拓扑一致，但普通主机不设静态 IP，
-    IP 交由核心路由器 c 上的 dnsmasq 分配。
+    核心路由器 c 有三块网卡：
+      c-eth0  trunk，连 A 校区交换机 s1
+      c-eth1  普通链路，连互联网/VPN 交换机 is
+      c-eth2  trunk，连 B 校区交换机 s2
+
+    DHCP 客户端主机在 addHost 时不配置 ip/defaultRoute，
+    由后续 start_dhcp_servers() + configure_dhcp_clients() 动态分配。
     """
 
     def build(self):
+        # ── 核心路由器 ──────────────────────────────────────────────────────
         core = self.addHost("c", cls=LinuxRouter, ip=None)
 
-        s1  = self.addSwitch("s1",  dpid="0000000000000001")
-        is_ = self.addSwitch("is",  dpid="0000000000000300")
-        s2  = self.addSwitch("s2",  dpid="0000000000000002")
+        # ── 三个交换机 ──────────────────────────────────────────────────────
+        s1  = self.addSwitch("s1",  dpid="0000000000000001")  # A 校区
+        is_ = self.addSwitch("is",  dpid="0000000000000300")  # 互联网/VPN
+        s2  = self.addSwitch("s2",  dpid="0000000000000002")  # B 校区
 
-        self.addLink(s1,  core)
-        self.addLink(is_, core)
-        self.addLink(s2,  core)
+        # ── trunk 链路（顺序决定路由器网卡编号）────────────────────────────
+        self.addLink(s1,  core)   # s1-eth1  <-> c-eth0（A 校区 trunk）
+        self.addLink(is_, core)   # is-eth1  <-> c-eth1（互联网/VPN）
+        self.addLink(s2,  core)   # s2-eth1  <-> c-eth2（B 校区 trunk）
 
-        # ── Campus A 主机（无静态 IP，走 DHCP）────────────────────────────
+        # ================================================================
+        # Campus A 主机
+        # ================================================================
 
+        # ── A 宿舍（VLAN 10）─── DHCP 客户端，不配静态 IP ────────────────
         for i in range(1, 4):
             h = self.addHost(
                 f"ad{i}",
+                ip="0.0.0.0",
                 mac=f"00:00:00:00:10:0{i}",
             )
             self.addLink(h, s1)
 
+        # ── A 教学楼（VLAN 20）─── DHCP 客户端 ───────────────────────────
         for i in range(1, 3):
             h = self.addHost(
                 f"at{i}",
+                ip="0.0.0.0",
                 mac=f"00:00:00:00:20:0{i}",
             )
             self.addLink(h, s1)
 
-        h = self.addHost("al1", mac="00:00:00:00:30:01")
+        # ── A 图书馆（VLAN 30）─── DHCP 客户端 ───────────────────────────
+        h = self.addHost(
+            "al1",
+            ip="0.0.0.0",
+            mac="00:00:00:00:30:01",
+        )
         self.addLink(h, s1)
 
+        # ── A 办公楼（VLAN 40）─── DHCP 客户端 ───────────────────────────
         for i in range(1, 3):
             h = self.addHost(
                 f"ao{i}",
+                ip="0.0.0.0",
                 mac=f"00:00:00:00:40:0{i}",
             )
             self.addLink(h, s1)
 
+        # ── A 人事处（VLAN 50）─── DHCP 客户端 ───────────────────────────
         for i in range(1, 3):
             h = self.addHost(
                 f"ahr{i}",
+                ip="0.0.0.0",
                 mac=f"00:00:00:00:50:0{i}",
             )
             self.addLink(h, s1)
 
+        # ── A 财务处（VLAN 60）─── DHCP 客户端 ───────────────────────────
         for i in range(1, 3):
             h = self.addHost(
                 f"afn{i}",
+                ip="0.0.0.0",
                 mac=f"00:00:00:00:60:0{i}",
             )
             self.addLink(h, s1)
 
-        # ── 共享服务器区（静态 IP，不参与 DHCP）───────────────────────────
+        # ── 共享服务器区（VLAN 100）─── 保持静态 IP ───────────────────────
         ws = self.addHost(
             "ws",
             ip="10.0.100.10/24",
@@ -162,12 +234,12 @@ class DualCampusVlanTopo(Topo):
         self.addLink(ws, s1)
         self.addLink(fs, s1)
 
-        # ── VPN 服务器 ──────────────────────────────────────────────────────
+        # ── VPN 服务器（内网侧 VLAN 200，公网侧 is）─── 保持静态 ──────────
         vpn = self.addHost("vpn", ip=None)
-        self.addLink(vpn, s1)
-        self.addLink(vpn, is_)
+        self.addLink(vpn, s1)    # vpn-eth0 -> s1 VLAN 200
+        self.addLink(vpn, is_)   # vpn-eth1 -> 公网侧
 
-        # ── 外部客户端 ──────────────────────────────────────────────────────
+        # ── 外部客户端（模拟互联网）─── 保持静态 ─────────────────────────
         ex = self.addHost(
             "ex",
             ip="203.0.113.2/24",
@@ -175,37 +247,55 @@ class DualCampusVlanTopo(Topo):
         )
         self.addLink(ex, is_)
 
-        # ── Campus B 主机（无静态 IP，走 DHCP）────────────────────────────
+        # ================================================================
+        # Campus B 主机
+        # ================================================================
 
+        # ── B 宿舍（VLAN 10，网段 10.1.10.x）─── DHCP 客户端 ─────────────
         for i in range(1, 3):
             h = self.addHost(
                 f"bd{i}",
+                ip="0.0.0.0",
                 mac=f"00:00:00:01:10:0{i}",
             )
             self.addLink(h, s2)
 
+        # ── B 教学楼（VLAN 20，网段 10.1.20.x）─── DHCP 客户端 ───────────
         for i in range(1, 3):
             h = self.addHost(
                 f"bt{i}",
+                ip="0.0.0.0",
                 mac=f"00:00:00:01:20:0{i}",
             )
             self.addLink(h, s2)
 
-        h = self.addHost("bl1", mac="00:00:00:01:30:01")
+        # ── B 图书馆（VLAN 30，网段 10.1.30.x）─── DHCP 客户端 ───────────
+        h = self.addHost(
+            "bl1",
+            ip="0.0.0.0",
+            mac="00:00:00:01:30:01",
+        )
         self.addLink(h, s2)
 
+        # ── B 办公楼（VLAN 40，网段 10.1.40.x）─── DHCP 客户端 ───────────
         for i in range(1, 3):
             h = self.addHost(
                 f"bo{i}",
+                ip="0.0.0.0",
                 mac=f"00:00:00:01:40:0{i}",
             )
             self.addLink(h, s2)
 
 
 # ---------------------------------------------------------------------------
-# 配置 OVS 交换机
+# 配置 OVS 交换机 + 手动打 VLAN access tag（与 M5 相同）
 # ---------------------------------------------------------------------------
 def configure_switches(net):
+    """
+    将 s1、s2、is 设为 standalone 模式，
+    并为每个 access 端口手动调用 ovs-vsctl set port ... tag=N。
+    trunk 端口不设 tag，保持 OVS 默认 trunk 行为。
+    """
     info("*** Configuring OVS switches and VLAN access ports\n")
 
     for sw_name in ["s1", "s2", "is"]:
@@ -231,15 +321,21 @@ def configure_switches(net):
 
 
 # ---------------------------------------------------------------------------
-# 配置 802.1Q 子接口
+# 配置 802.1Q 子接口（与 M5 相同）
 # ---------------------------------------------------------------------------
 def configure_vlan_routing(net):
+    """
+    在路由器 c 上为两个校区分别创建 802.1Q 子接口并分配网关 IP。
+    A 校区：c-eth0.10, c-eth0.20, ...
+    B 校区：c-eth2.10, c-eth2.20, ...
+    """
     info("*** Configuring 802.1Q VLAN sub-interfaces on router c\n")
 
     core = net.get("c")
     core.cmd("sysctl -w net.ipv4.ip_forward=1")
     core.cmd("modprobe 8021q")
 
+    # ── Campus A trunk：c-eth0 ─────────────────────────────────────────────
     info("  [Campus A] trunk interface: c-eth0\n")
     core.cmd("ip addr flush dev c-eth0")
     core.cmd("ip link set c-eth0 up")
@@ -250,9 +346,11 @@ def configure_vlan_routing(net):
         core.cmd(f"ip link set {subif} up")
         info(f"    {subif:14s}  [{desc:12s}]  gw {gw_ip}\n")
 
+    # ── 互联网/VPN 接口：c-eth1（不设 VLAN）─────────────────────────────
     core.cmd("ip addr flush dev c-eth1")
     core.cmd("ip link set c-eth1 up")
 
+    # ── Campus B trunk：c-eth2 ─────────────────────────────────────────────
     info("  [Campus B] trunk interface: c-eth2\n")
     core.cmd("ip addr flush dev c-eth2")
     core.cmd("ip link set c-eth2 up")
@@ -268,75 +366,174 @@ def configure_vlan_routing(net):
 
 
 # ---------------------------------------------------------------------------
-# DHCP 服务器（dnsmasq）
+# M6 新增：在路由器 c 上启动 DHCP 服务（每个 VLAN 子接口一个 dnsmasq 实例）
 # ---------------------------------------------------------------------------
-def configure_dhcp(net):
-    info("*** Configuring DHCP server (dnsmasq) on router c\n")
+def start_dhcp_servers(net):
+    """
+    在核心路由器 c 的每个需要 DHCP 的 VLAN 子接口上独立启动一个 dnsmasq 进程。
+
+    关键参数说明：
+      --interface=<subif>      只监听该子接口，隔离各 VLAN
+      --bind-interfaces        严格绑定，不跨接口响应
+      --port=0                 禁用 DNS，专注纯 DHCP 模式
+      --keep-in-foreground     【关键】不自行 daemonize/fork，由 bash 的 & 在
+                               正确的 Mininet network namespace 内 fork，
+                               避免进程逃逸到宿主机的全局 namespace
+      --dhcp-range             地址池范围和租约时间
+      --dhcp-option=3,<gw>     Option 3 = Default Router，告知客户端默认网关
+      --dhcp-leasefile         租约持久化文件（/tmp 下，便于调试和清理）
+      --log-facility=-         日志输出到 stderr（重定向到文件）
+    """
+    info("*** Starting DHCP servers (dnsmasq) on router c\n")
 
     core = net.get("c")
+
+    # 清理上一次残留的 dnsmasq 进程和 lease 文件
+    core.cmd("pkill -f 'keep-in-foreground' 2>/dev/null || true")
+    core.cmd("rm -f /tmp/m6-dhcp-*.leases /tmp/m6-dhcp-*.pid /tmp/m6-dhcp-*.log")
+    # 清除 dhcpcd 旧 lease（在 Python 层面删，因为是宿主机 fs）
+    import glob as _glob
+    for f in _glob.glob("/var/lib/dhcpcd/*.lease"):
+        try:
+            import os as _os
+            _os.remove(f)
+        except OSError:
+            pass
+
     dnsmasq = core.cmd("command -v dnsmasq").strip()
     if not dnsmasq:
         info("!!! dnsmasq not found; install with: sudo apt install dnsmasq\n")
-        return
+        return False
 
-    core.cmd("pkill -f 'dnsmasq.*mininet-m6' 2>/dev/null || true")
+    for subif, (start, end, gw, lease) in DHCP_RANGES.items():
+        # 将子接口名转换为合法文件名（如 c-eth0.10 -> c_eth0_10）
+        safe = subif.replace("-", "_").replace(".", "_")
+        lf   = f"/tmp/m6-dhcp-{safe}.leases"
+        pf   = f"/tmp/m6-dhcp-{safe}.pid"    # 每实例独立 pid 文件，避免争抢 /var/run/dnsmasq.pid
+        log  = f"/tmp/m6-dhcp-{safe}.log"
 
-    conf_path = "/tmp/mininet-m6-dhcp.conf"
-    pid_path  = "/tmp/mininet-m6-dhcp.pid"
-    log_path  = "/tmp/mininet-m6-dhcp.log"
-
-    lines = [
-        "port=0",
-        "dhcp-authoritative",
-        "log-dhcp",
-    ]
-
-    for vlan_id, (_desc, gw_ip) in CAMPUS_A_VLANS.items():
-        gw = gw_ip.split("/")[0]
-        net_addr = gw.rsplit(".", 1)[0] + ".0"
-        lines.append(f"dhcp-range={net_addr},static,255.255.255.0,1h")
-        lines.append(f"dhcp-option=3,{gw}")
-
-    for vlan_id, (_desc, gw_ip) in CAMPUS_B_VLANS.items():
-        gw = gw_ip.split("/")[0]
-        net_addr = gw.rsplit(".", 1)[0] + ".0"
-        lines.append(f"dhcp-range={net_addr},static,255.255.255.0,1h")
-        lines.append(f"dhcp-option=3,{gw}")
-
-    for hostname, (ip, mac) in DHCP_LEASE.items():
-        lines.append(f"dhcp-host={mac},{ip}")
-
-    with open(conf_path, "w") as f:
-        f.write("\n".join(lines) + "\n")
-
-    core.cmd(f"rm -f {pid_path} {log_path}")
-    core.cmd(
-        f"{dnsmasq} -C {conf_path} -x {pid_path} "
-        f"--no-daemon > {log_path} 2>&1 &"
-    )
-    time.sleep(1)
-
-    if core.cmd(f"pgrep -f 'dnsmasq.*{pid_path}' || true").strip():
-        info("*** DHCP server started successfully\n")
-    else:
-        info("!!! DHCP server failed; check: c cat {log_path}\n")
-        info(core.cmd(f"cat {log_path}"))
-        return
-
-    for hostname in DHCP_LEASE:
-        host = net.get(hostname)
-        host.cmd(
-            f"dhclient -pf /tmp/dhclient-{hostname}.pid "
-            f"-lf /tmp/dhclient-{hostname}.leases eth0 2>/dev/null"
+        # 用 --keep-in-foreground 阻止 dnsmasq 自行 daemonize，
+        # 然后在 node 的 bash shell（已在正确 namespace）里用 & 后台化，
+        # 这样所有子进程都留在 c 的 network namespace 内。
+        # 注意：--pid-file 必须指定到 /tmp 下各自独立路径，
+        # 否则多个实例争抢 /var/run/dnsmasq.pid 导致后启动的进程退出。
+        cmd = (
+            f"{dnsmasq}"
+            f" --keep-in-foreground"
+            f" --no-ping"
+            f" --interface={subif}"
+            f" --bind-interfaces"
+            f" --port=0"
+            f" --dhcp-range={start},{end},{lease}"
+            f" --dhcp-option=3,{gw}"
+            f" --dhcp-leasefile={lf}"
+            f" --pid-file={pf}"
+            f" --log-facility=-"
+            f" > {log} 2>&1 &"
         )
-        ip = DHCP_LEASE[hostname][0]
-        info(f"  {hostname} -> {ip} (DHCP)\n")
+        core.cmd(cmd)
+        info(f"  dnsmasq on {subif:15s}  pool {start}-{end}  gw {gw}\n")
+
+    # 等待 dnsmasq 完全绑定端口
+    time.sleep(0.5)
+
+    # 验证：在 c 的 namespace 内统计后台进程
+    count = core.cmd("pgrep -c -f 'keep-in-foreground' 2>/dev/null || echo 0").strip()
+    info(f"  {count} dnsmasq instance(s) running in router c namespace\n")
+    return True
 
 
 # ---------------------------------------------------------------------------
-# VPN 地址
+# M6 新增：在终端主机上启动 DHCP 客户端
+# ---------------------------------------------------------------------------
+def configure_dhcp_clients(net):
+    """
+    对 DHCP_HOSTS 中的每台主机：
+      1. 清除 dhcpcd 残留的旧 lease 文件（/var/lib/dhcpcd/<intf>.lease）
+         防止 dhcpcd 复用旧 lease 走 rebind→expire→IPv4LL 慢路径
+      2. flush 掉 Mininet 自动配置的占位 IP
+      3. 确保接口 UP
+      4. 启动 dhcpcd
+
+    关键：使用 -B (--nobackground) 阻止 dhcpcd 自行 daemonize，
+    然后在 node 的 bash shell（已在正确的 Mininet network namespace 里）
+    用 & 后台运行。这样 dhcpcd 的所有子进程都留在主机自己的 namespace，
+    不会逃逸到宿主机的全局 namespace。
+
+    等待策略：主动轮询每台主机是否拿到 IP，最多等 30 秒，
+    避免硬编码 sleep 导致"等够了但还没拿到"或"早拿到但多等了"。
+    """
+    info("*** Starting DHCP clients on hosts\n")
+
+    # 清除所有旧 lease，强制走全新 DISCOVER（避免 rebind 慢路径）
+    for hname in DHCP_HOSTS:
+        intf = f"{hname}-eth0"
+        lease = f"/var/lib/dhcpcd/{intf}.lease"
+        # 在宿主机层面删除（lease 文件在宿主机 fs，各 namespace 共享同一文件系统）
+        import os
+        try:
+            os.remove(lease)
+            info(f"  removed stale lease: {lease}\n")
+        except FileNotFoundError:
+            pass
+
+    for hname in DHCP_HOSTS:
+        h    = net.get(hname)
+        intf = f"{hname}-eth0"
+        h.cmd(f"ip addr flush dev {intf}")
+        h.cmd(f"ip link set {intf} up")
+        # -B: 不后台化（由 bash 的 & 在正确 namespace 内 fork）
+        # -t 15: 最多等 15 秒获取租约
+        # 日志重定向到文件，方便调试
+        h.cmd(f"dhcpcd -B -t 15 {intf} > /tmp/m6-dhcpcd-{hname}.log 2>&1 &")
+        info(f"  dhcpcd started on {hname} ({intf})\n")
+
+    # 主动轮询：等到所有主机都拿到 IP，或超时 30 秒
+    info("  Polling for DHCP leases (max 30s)...\n")
+    deadline = time.time() + 30
+    while time.time() < deadline:
+        time.sleep(2)
+        missing = []
+        for hname in DHCP_HOSTS:
+            h   = net.get(hname)
+            out = h.cmd(f"ip -4 addr show dev {hname}-eth0 2>/dev/null")
+            m   = re.search(r"inet (\d+\.\d+\.\d+\.\d+)/", out)
+            if not m:
+                missing.append(hname)
+        if not missing:
+            info("  All hosts obtained DHCP leases.\n")
+            break
+        info(f"  Still waiting: {', '.join(missing)}\n")
+    else:
+        info("  [WARN] Timeout: some hosts may not have obtained IP\n")
+
+    # 打印每台主机获取到的 IP，便于肉眼验证
+    info("*** DHCP lease summary\n")
+    for hname in DHCP_HOSTS:
+        h   = net.get(hname)
+        out = h.cmd(f"ip -4 addr show dev {hname}-eth0 2>/dev/null")
+        m   = re.search(r"inet (\d+\.\d+\.\d+\.\d+)/", out)
+        ip  = m.group(1) if m else "NO IP"
+        gw  = h.cmd("ip route show default 2>/dev/null").strip()
+        info(f"  {hname:6s}  ip={ip:15s}  {gw}\n")
+
+
+# ---------------------------------------------------------------------------
+# 辅助函数：动态读取主机当前 IP（供测试函数使用）
+# ---------------------------------------------------------------------------
+def get_host_ip(node):
+    """从主机的 eth0 接口读取当前 IPv4 地址，返回字符串，失败返回空串。"""
+    intf = f"{node.name}-eth0"
+    out  = node.cmd(f"ip -4 addr show dev {intf} 2>/dev/null")
+    m    = re.search(r"inet (\d+\.\d+\.\d+\.\d+)/", out)
+    return m.group(1) if m else ""
+
+
+# ---------------------------------------------------------------------------
+# 配置 VPN 服务器地址（与 M5 相同）
 # ---------------------------------------------------------------------------
 def configure_vpn_addresses(net):
+    """vpn-eth0 在 VLAN 200（A 校区），vpn-eth1 在公网侧。"""
     info("*** Configuring VPN server addresses\n")
 
     vpn = net.get("vpn")
@@ -357,9 +554,10 @@ def configure_vpn_addresses(net):
 
 
 # ---------------------------------------------------------------------------
-# 启动服务
+# 启动服务（与 M5 相同）
 # ---------------------------------------------------------------------------
 def start_services(net):
+    """在共享服务器区启动 Web 和 FTP 服务。"""
     info("*** Starting network services (Web + FTP)\n")
 
     ws = net.get("ws")
@@ -385,13 +583,21 @@ def start_services(net):
 
 
 # ---------------------------------------------------------------------------
-# ACL
+# ACL 防火墙规则（与 M5 相同）
 # ---------------------------------------------------------------------------
 def configure_acl(net):
+    """
+    校区间访问控制策略：
+    - 共享服务器（10.0.100.x）：两个校区所有人都可以访问
+    - A-HR（10.0.50.x）/ A-Finance（10.0.60.x）：
+        允许 A-Office（10.0.40.x）和 B-Office（10.1.40.x）
+        拒绝其他所有来源
+    注：ACL 按网段控制，与 DHCP 动态分配的具体 IP 无关。
+    """
     info("*** Configuring ACL rules\n")
 
     core = net.get("c")
-    ipt = core.cmd("command -v iptables").strip()
+    ipt  = core.cmd("command -v iptables").strip()
     if not ipt:
         info("!!! iptables not found; skipping ACL\n")
         return
@@ -400,10 +606,12 @@ def configure_acl(net):
     core.cmd(f"{ipt} -t nat -F")
     core.cmd(f"{ipt} -P FORWARD ACCEPT")
 
+    # ── 共享服务器区：所有人可以访问 ──────────────────────────────────────
     core.cmd(f"{ipt} -A FORWARD -d 10.0.100.10 -p tcp --dport 80 -j ACCEPT")
     core.cmd(f"{ipt} -A FORWARD -d 10.0.100.20 -p tcp --dport 21 -j ACCEPT")
     core.cmd(f"{ipt} -A FORWARD -d 10.0.100.0/24               -j ACCEPT")
 
+    # ── A-HR（10.0.50.x）访问控制 ─────────────────────────────────────────
     core.cmd(f"{ipt} -A FORWARD -s 10.0.40.0/24 -d 10.0.50.0/24 -j ACCEPT")
     core.cmd(f"{ipt} -A FORWARD -s 10.1.40.0/24 -d 10.0.50.0/24 -j ACCEPT")
     core.cmd(f"{ipt} -A FORWARD -s 10.0.10.0/24 -d 10.0.50.0/24 -j DROP")
@@ -414,6 +622,7 @@ def configure_acl(net):
     core.cmd(f"{ipt} -A FORWARD -s 10.1.30.0/24 -d 10.0.50.0/24 -j DROP")
     core.cmd(f"{ipt} -A FORWARD                 -d 10.0.50.0/24 -j DROP")
 
+    # ── A-Finance（10.0.60.x）访问控制 ────────────────────────────────────
     core.cmd(f"{ipt} -A FORWARD -s 10.0.40.0/24 -d 10.0.60.0/24 -j ACCEPT")
     core.cmd(f"{ipt} -A FORWARD -s 10.1.40.0/24 -d 10.0.60.0/24 -j ACCEPT")
     core.cmd(f"{ipt} -A FORWARD -s 10.0.10.0/24 -d 10.0.60.0/24 -j DROP")
@@ -424,18 +633,20 @@ def configure_acl(net):
     core.cmd(f"{ipt} -A FORWARD -s 10.1.30.0/24 -d 10.0.60.0/24 -j DROP")
     core.cmd(f"{ipt} -A FORWARD                 -d 10.0.60.0/24 -j DROP")
 
+    # ── 已建立连接允许回包 ─────────────────────────────────────────────────
     core.cmd(f"{ipt} -A FORWARD -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT")
 
     info(core.cmd(f"{ipt} -vnL FORWARD --line-numbers"))
 
 
 # ---------------------------------------------------------------------------
-# Darkstat 监控
+# Darkstat 监控（与 M5 相同）
 # ---------------------------------------------------------------------------
 def start_darkstat(net):
+    """在路由器 c 上启动 darkstat，监控两条 trunk 接口流量。"""
     info("*** Starting Darkstat traffic monitor\n")
 
-    core = net.get("c")
+    core    = net.get("c")
     darkstat = core.cmd("command -v darkstat").strip()
     if not darkstat:
         info("!!! darkstat not found; install with: sudo apt install darkstat\n")
@@ -450,7 +661,6 @@ def start_darkstat(net):
         f"  rm -f {pid_path}; fi"
     )
     core.cmd(f"rm -f {log_path}")
-
     core.cmd(
         f"{darkstat} -i any -b 0.0.0.0 -p 3001 --no-daemon "
         f"> {log_path} 2>&1 & echo $! > {pid_path}"
@@ -461,70 +671,133 @@ def start_darkstat(net):
         info(f"!!! darkstat failed; check: c cat {log_path}\n")
         return False
 
-    info("darkstat monitoring c-eth0 (A-campus trunk)\n")
+    info("darkstat monitoring all interfaces on router c\n")
     info("Web UI: http://10.0.10.254:3001\n")
-    info("Host browser access:\n")
-    info("  sudo ip addr add 10.0.10.253/24 dev s1 2>/dev/null || true\n")
-    info("  sudo ip link set s1 up\n")
     return True
 
 
 # ---------------------------------------------------------------------------
-# 连通性测试
+# 连通性测试（M6 改版：动态读取 DHCP 分配的 IP）
 # ---------------------------------------------------------------------------
 def test_connectivity(net):
-    info("*** Testing connectivity\n")
+    """
+    覆盖五类场景：
+      1. DHCP 获取验证（检查 IP 是否在预期池范围内）
+      2. 同校区同 VLAN 二层互通
+      3. 同校区跨 VLAN 三层路由
+      4. 跨校区三层路由（A <-> B）
+      5. ACL 验证（HR/Finance 的访问控制）
+
+    所有目标 IP 均动态读取，不依赖硬编码地址。
+    """
+    info("*** Testing connectivity (M6 - DHCP-aware)\n")
 
     ad1  = net.get("ad1")
+    ad2  = net.get("ad2")
+    at1  = net.get("at1")
     ao1  = net.get("ao1")
     bd1  = net.get("bd1")
     bo1  = net.get("bo1")
     ahr1 = net.get("ahr1")
+    afn1 = net.get("afn1")
 
+    # 动态获取各主机的 IP
+    ip_ad1  = get_host_ip(ad1)
+    ip_ad2  = get_host_ip(ad2)
+    ip_at1  = get_host_ip(at1)
+    ip_ao1  = get_host_ip(ao1)
+    ip_bd1  = get_host_ip(bd1)
+    ip_bo1  = get_host_ip(bo1)
+    ip_ahr1 = get_host_ip(ahr1)
+    ip_afn1 = get_host_ip(afn1)
+
+    info(f"  IP summary: ad1={ip_ad1}  at1={ip_at1}  ao1={ip_ao1}\n")
+    info(f"              bd1={ip_bd1}  bo1={ip_bo1}\n")
+    info(f"              ahr1={ip_ahr1}  afn1={ip_afn1}\n")
+
+    # ── 1. DHCP 地址合法性验证 ─────────────────────────────────────────────
+    def in_pool(ip, prefix):
+        """检查 IP 是否在 .50-.150 的动态池内，prefix 如 '10.0.10.'"""
+        if not ip.startswith(prefix):
+            return False
+        last = int(ip.split(".")[-1])
+        return 50 <= last <= 150
+
+    info("[DHCP] Validating assigned IPs are within pool range (.50-.150)\n")
+    checks = [
+        ("ad1",  ip_ad1,  "10.0.10."),
+        ("at1",  ip_at1,  "10.0.20."),
+        ("ao1",  ip_ao1,  "10.0.40."),
+        ("ahr1", ip_ahr1, "10.0.50."),
+        ("afn1", ip_afn1, "10.0.60."),
+        ("bd1",  ip_bd1,  "10.1.10."),
+        ("bo1",  ip_bo1,  "10.1.40."),
+    ]
+    for name, ip, prefix in checks:
+        ok = in_pool(ip, prefix)
+        info(f"  [DHCP] {name:5s}  ip={ip:15s}  {'PASS' if ok else 'FAIL (not in pool)'}\n")
+
+    if not ip_ad1 or not ip_bd1:
+        info("[WARN] Some hosts have no IP; skipping connectivity tests\n")
+        return
+
+    # ── 2. 网关连通性（VLAN tag + 子接口基础验证）────────────────────────
     r = ad1.cmd("ping -c 2 -W 2 10.0.10.254")
-    info(f"[A VLAN10] ad1 -> gw c-eth0.10:           {'OK' if '0%' in r else 'FAIL'}\n")
+    info(f"[GW]   ad1 -> c-eth0.10 (10.0.10.254):   {'OK' if '0%' in r else 'FAIL'}\n")
 
     r = bd1.cmd("ping -c 2 -W 2 10.1.10.254")
-    info(f"[B VLAN10] bd1 -> gw c-eth2.10:           {'OK' if '0%' in r else 'FAIL'}\n")
+    info(f"[GW]   bd1 -> c-eth2.10 (10.1.10.254):   {'OK' if '0%' in r else 'FAIL'}\n")
 
-    r = ad1.cmd("ping -c 2 -W 2 10.0.20.1")
-    info(f"[A 10->20] ad1 -> at1 (inter-VLAN):       {'OK' if '0%' in r else 'FAIL'}\n")
+    # ── 3. 同校区同 VLAN 二层互通 ──────────────────────────────────────────
+    if ip_ad2:
+        r = ad1.cmd(f"ping -c 2 -W 2 {ip_ad2}")
+        info(f"[L2]   ad1 -> ad2 ({ip_ad2}):  {'OK' if '0%' in r else 'FAIL'}\n")
 
-    r = bd1.cmd("ping -c 2 -W 2 10.1.20.1")
-    info(f"[B 10->20] bd1 -> bt1 (inter-VLAN):       {'OK' if '0%' in r else 'FAIL'}\n")
+    # ── 4. 同校区跨 VLAN 三层路由 ──────────────────────────────────────────
+    if ip_at1:
+        r = ad1.cmd(f"ping -c 2 -W 2 {ip_at1}")
+        info(f"[L3-A] ad1 -> at1 ({ip_at1}):  {'OK' if '0%' in r else 'FAIL'}\n")
 
-    r = ad1.cmd("ping -c 2 -W 2 10.1.10.1")
-    info(f"[A->B] ad1 (10.0.10.1) -> bd1 (10.1.10.1):{'OK' if '0%' in r else 'FAIL'}\n")
+    # ── 5. 跨校区路由（A <-> B）────────────────────────────────────────────
+    r = ad1.cmd(f"ping -c 2 -W 2 {ip_bd1}")
+    info(f"[A->B] ad1 ({ip_ad1}) -> bd1 ({ip_bd1}): {'OK' if '0%' in r else 'FAIL'}\n")
 
-    r = bd1.cmd("ping -c 2 -W 2 10.0.10.1")
-    info(f"[B->A] bd1 (10.1.10.1) -> ad1 (10.0.10.1):{'OK' if '0%' in r else 'FAIL'}\n")
+    r = bd1.cmd(f"ping -c 2 -W 2 {ip_ad1}")
+    info(f"[B->A] bd1 ({ip_bd1}) -> ad1 ({ip_ad1}): {'OK' if '0%' in r else 'FAIL'}\n")
 
+    # ── 6. 共享服务器（两校区都能访问）────────────────────────────────────
     r = ad1.cmd("curl -s --connect-timeout 3 http://10.0.100.10")
-    info(f"[A->Server] ad1 -> Web:                   {'OK' if 'Web Server' in r else 'FAIL'}\n")
+    info(f"[SRV]  ad1 -> Web server:                 {'OK' if 'Web Server' in r else 'FAIL'}\n")
 
     r = bd1.cmd("curl -s --connect-timeout 3 http://10.0.100.10")
-    info(f"[B->Server] bd1 -> Web:                   {'OK' if 'Web Server' in r else 'FAIL'}\n")
+    info(f"[SRV]  bd1 -> Web server:                 {'OK' if 'Web Server' in r else 'FAIL'}\n")
 
-    r = ad1.cmd("ping -c 2 -W 2 10.0.50.1")
-    blocked = "100% packet loss" in r or "0 received" in r
-    info(f"[ACL] ad1 (A-Dorm) -> ahr1 (A-HR):        {'BLOCKED (ok)' if blocked else 'ALLOWED (!)'}\n")
+    # ── 7. ACL：A 宿舍不能访问 A-HR ────────────────────────────────────────
+    if ip_ahr1:
+        r       = ad1.cmd(f"ping -c 2 -W 2 {ip_ahr1}")
+        blocked = "100% packet loss" in r or "0 received" in r
+        info(f"[ACL]  ad1 (A-Dorm) -> ahr1 ({ip_ahr1}):   {'BLOCKED (ok)' if blocked else 'ALLOWED (!)'}\n")
 
-    r = bd1.cmd("ping -c 2 -W 2 10.0.50.1")
-    blocked = "100% packet loss" in r or "0 received" in r
-    info(f"[ACL] bd1 (B-Dorm) -> ahr1 (A-HR):        {'BLOCKED (ok)' if blocked else 'ALLOWED (!)'}\n")
+    # ── 8. ACL：A 办公楼可以访问 A-HR ──────────────────────────────────────
+    if ip_ahr1:
+        r = ao1.cmd(f"ping -c 2 -W 2 {ip_ahr1}")
+        info(f"[ACL]  ao1 (A-Office) -> ahr1 ({ip_ahr1}): {'OK' if '0%' in r else 'FAIL'}\n")
 
-    r = ao1.cmd("ping -c 2 -W 2 10.0.50.1")
-    info(f"[ACL] ao1 (A-Office) -> ahr1 (A-HR):      {'OK' if '0%' in r else 'FAIL'}\n")
+    # ── 9. ACL：B 办公楼可以访问 A-HR（跨校区协作）────────────────────────
+    if ip_ahr1:
+        r = bo1.cmd(f"ping -c 2 -W 2 {ip_ahr1}")
+        info(f"[ACL]  bo1 (B-Office) -> ahr1 ({ip_ahr1}): {'OK' if '0%' in r else 'FAIL'}\n")
 
-    r = bo1.cmd("ping -c 2 -W 2 10.0.50.1")
-    info(f"[ACL] bo1 (B-Office) -> ahr1 (A-HR):      {'OK' if '0%' in r else 'FAIL'}\n")
+    # ── 10. ACL：A 宿舍不能访问 A-Finance ──────────────────────────────────
+    if ip_afn1:
+        r       = ad1.cmd(f"ping -c 2 -W 2 {ip_afn1}")
+        blocked = "100% packet loss" in r or "0 received" in r
+        info(f"[ACL]  ad1 (A-Dorm) -> afn1 ({ip_afn1}): {'BLOCKED (ok)' if blocked else 'ALLOWED (!)'}\n")
 
-    r = ad1.cmd("ping -c 2 -W 2 10.0.60.1")
-    blocked = "100% packet loss" in r or "0 received" in r
-    info(f"[ACL] ad1 (A-Dorm) -> afn1 (A-Finance):   {'BLOCKED (ok)' if blocked else 'ALLOWED (!)'}\n")
-
-    r = bo1.cmd("ping -c 2 -W 2 10.0.60.1")
-    info(f"[ACL] bo1 (B-Office) -> afn1 (A-Finance): {'OK' if '0%' in r else 'FAIL'}\n")
+    # ── 11. ACL：B 办公楼可以访问 A-Finance ────────────────────────────────
+    if ip_afn1:
+        r = bo1.cmd(f"ping -c 2 -W 2 {ip_afn1}")
+        info(f"[ACL]  bo1 (B-Office) -> afn1 ({ip_afn1}): {'OK' if '0%' in r else 'FAIL'}\n")
 
 
 # ---------------------------------------------------------------------------
@@ -549,28 +822,47 @@ def run():
     dumpNodeConnections(net.hosts)
 
     try:
+        # 1. 配置 OVS 交换机 VLAN 标签（同 M5）
         configure_switches(net)
+
+        # 2. 创建 802.1Q 子接口并分配网关 IP（同 M5）
         configure_vlan_routing(net)
-        configure_dhcp(net)
+
+        # 3. 【M6 新增】在路由器 c 上为每个 VLAN 子接口启动 dnsmasq DHCP 服务
+        start_dhcp_servers(net)
+
+        # 4. 配置 VPN 和外部客户端静态地址（同 M5）
         configure_vpn_addresses(net)
+
+        # 5. 【M6 新增】在终端主机上启动 dhcpcd，等待动态 IP 分配完成
+        configure_dhcp_clients(net)
+
+        # 6. 启动 Web/FTP 服务（同 M5）
         start_services(net)
+
+        # 7. 配置 iptables ACL（同 M5，按网段规则，与动态 IP 无关）
         configure_acl(net)
+
+        # 8. 启动 Darkstat 流量监控（同 M5）
         start_darkstat(net)
+
+        # 9. 连通性测试（M6 改版：动态读 IP）
         test_connectivity(net)
 
-        info("\n*** Entering Mininet CLI\n")
+        info("\n*** Entering Mininet CLI (M6 - DHCP enabled)\n")
         info("Network layout:\n")
-        info("  Campus A (s1, 10.0.x.x):  ad1-ad3  at1-at2  al1  ao1-ao2  ahr1-ahr2  afn1-afn2\n")
-        info("  Campus B (s2, 10.1.x.x):  bd1-bd2  bt1-bt2  bl1  bo1-bo2\n")
-        info("  Shared server (VLAN 100): ws=10.0.100.10  fs=10.0.100.20\n")
-        info("  All campus hosts obtain IPs via DHCP (dnsmasq on c)\n")
+        info("  Campus A (s1, 10.0.x.x):  ad1-ad3  at1-at2  al1  ao1-ao2  ahr1-ahr2  afn1-afn2  [DHCP]\n")
+        info("  Campus B (s2, 10.1.x.x):  bd1-bd2  bt1-bt2  bl1  bo1-bo2              [DHCP]\n")
+        info("  Static:  ws=10.0.100.10  fs=10.0.100.20  vpn=10.0.200.10\n")
+        info("DHCP pool range: .50 - .150 per VLAN subnet\n")
         info("Useful commands:\n")
-        info("  ad1 ping 10.1.10.1          # A->B cross-campus routing\n")
-        info("  bd1 ping 10.0.10.1          # B->A cross-campus routing\n")
-        info("  ad1 ping 10.0.50.1          # blocked by ACL\n")
-        info("  bo1 ping 10.0.50.1          # allowed by ACL (B-Office -> A-HR)\n")
-        info("  bd1 curl http://10.0.100.10 # B-campus access shared server\n")
-        info("  c ip -d link show type vlan # show all VLAN sub-interfaces\n")
+        info("  ad1 ip addr              # show DHCP-assigned IP\n")
+        info("  ad1 ip route             # show default route from DHCP\n")
+        info("  c cat /tmp/m6-dhcp-c_eth0_10.leases  # view DHCP leases for A-Dorm\n")
+        info("  ad1 ping 10.1.10.254     # A->B gateway\n")
+        info("  ad1 ping <bd1-ip>        # A->B cross-campus (get ip via: bd1 ip addr)\n")
+        info("  bd1 curl http://10.0.100.10  # B-campus access shared server\n")
+        info("  c iptables -vnL FORWARD --line-numbers  # view ACL rules\n")
         info("  exit\n\n")
 
         CLI(net)
@@ -578,12 +870,37 @@ def run():
     except KeyboardInterrupt:
         info("\n*** Interrupted\n")
     finally:
-        info("*** Stopping network\n")
+        info("*** Stopping network and cleaning up\n")
         core = net.get("c")
+
+        # 停止所有 DHCP 客户端（在各自的 namespace 内 kill dhcpcd）
+        for hname in DHCP_HOSTS:
+            try:
+                net.get(hname).cmd("pkill -f dhcpcd 2>/dev/null || true")
+            except Exception:
+                pass
+
+        # 停止路由器 c 上所有 dnsmasq 实例（按 pid 文件 kill，再按特征 pkill 兜底）
+        for subif in DHCP_RANGES:
+            safe = subif.replace("-", "_").replace(".", "_")
+            pf   = f"/tmp/m6-dhcp-{safe}.pid"
+            core.cmd(f"[ -f {pf} ] && kill $(cat {pf}) 2>/dev/null || true; rm -f {pf}")
+        core.cmd("pkill -f 'keep-in-foreground' 2>/dev/null || true")
+        core.cmd("rm -f /tmp/m6-dhcp-*.leases /tmp/m6-dhcp-*.log /tmp/m6-dhcpcd-*.log")
+
+        # 停止 darkstat
+        core.cmd(
+            "if [ -f /tmp/mininet-m6-darkstat.pid ]; then "
+            "  kill $(cat /tmp/mininet-m6-darkstat.pid) 2>/dev/null || true; "
+            "  rm -f /tmp/mininet-m6-darkstat.pid; fi"
+        )
+
+        # 删除 VLAN 子接口
         for vlan_id in CAMPUS_A_VLANS:
             core.cmd(f"ip link delete c-eth0.{vlan_id} 2>/dev/null || true")
         for vlan_id in CAMPUS_B_VLANS:
             core.cmd(f"ip link delete c-eth2.{vlan_id} 2>/dev/null || true")
+
         net.stop()
 
 
