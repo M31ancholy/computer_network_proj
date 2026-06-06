@@ -49,6 +49,19 @@ sudo ip link set s1 up
 # 在VM中打开 10.0.10.254:3001 端口
 ```
 
+MileStone 6 时代的脚本
+```bash
+# 1. 在 s1 接口上创建一个带有 VLAN 10 标签的虚拟接口 s1.10
+sudo ip link add link s1 name s1.10 type vlan id 10
+
+# 2. 为这个带有 VLAN 标签的接口分配 IP
+sudo ip addr add 10.0.10.253/24 dev s1.10
+
+# 3. 启用该接口
+sudo ip link set s1 up
+
+# 在VM中打开 10.0.10.254:3001 端口
+```
 
 ## 已经额外实现的需求
 1. 实现VPN 外部接入
