@@ -19,6 +19,7 @@
 3. 特定区域（如人事处、财务处）需设置访问控制，限制其他区域访问。
 
 ## 临时保存的脚本
+MileStone3 时代的脚本
 ```bash
 # 把mininet 内的东西映射到 Ubuntu中 以供端口转发
 
@@ -33,7 +34,24 @@ sudo socat TCP-LISTEN:3001,fork,reuseaddr,bind=127.0.0.1 \
 # 测试一下 在VM 里面
 curl http://127.0.0.1:3001
 ```
+MileStone 5 时代的脚本
+```bash
+# 1. 在 s1 接口上创建一个带有 VLAN 10 标签的虚拟接口 s1.10
+sudo ip link add link s1 name s1.10 type vlan id 10
+
+# 2. 为这个带有 VLAN 标签的接口分配 IP
+sudo ip addr add 10.0.10.253/24 dev s1.10
+
+# 3. 启用该接口
+sudo ip link set s1.10 up
+sudo ip link set s1 up
+
+# 在VM中打开 10.0.10.254:3001 端口
+```
+
 
 ## 已经额外实现的需求
 1. 实现VPN 外部接入
 2. 对于c（主核心路由节点），配置了darkstat 监控流量
+3. 添加VLAN
+4. 添加了b校区 现在有a,b两个校区
