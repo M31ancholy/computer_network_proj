@@ -503,7 +503,7 @@ def start_darkstat(net):
 
     # 监听 c-eth0（A 校区 trunk），也可改为 any 捕获所有接口
     core.cmd(
-        f"{darkstat} -i c-eth0 -b 0.0.0.0 -p 3001 --no-daemon "
+        f"{darkstat} -i any -b 0.0.0.0 -p 3001 --no-daemon "
         f"> {log_path} 2>&1 & echo $! > {pid_path}"
     )
     time.sleep(1)
