@@ -532,6 +532,7 @@ def get_host_ip(node):
 # ---------------------------------------------------------------------------
 # 配置 VPN 服务器地址（与 M5 相同）
 # ---------------------------------------------------------------------------
+# vpn-eth1 和外网通信 vpn-eth0和内网通信
 def configure_vpn_addresses(net):
     """vpn-eth0 在 VLAN 200（A 校区），vpn-eth1 在公网侧。"""
     info("*** Configuring VPN server addresses\n")
