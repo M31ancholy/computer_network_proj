@@ -602,8 +602,8 @@ def configure_vpn_addresses(net):
     ex.cmd(f"python3 -c \"from pathlib import Path; Path('/tmp/mininet-vpn.key').write_text({key_data!r})\"")
 
     # 内网和公网似乎反了
-    vpn.cmd(f"{iptables} -F")
-    vpn.cmd(f"{iptables} -t nat -F")
+    # vpn.cmd(f"{iptables} -F")
+    # vpn.cmd(f"{iptables} -t nat -F")
     vpn.cmd(f"{iptables} -P FORWARD ACCEPT")
     vpn.cmd(f"{iptables} -t nat -A POSTROUTING -s 10.8.0.0/24 -d 10.0.0.0/16 -o vpn-eth0 -j MASQUERADE")
     vpn.cmd(f"{iptables} -A FORWARD -i tun0 -o vpn-eth0 -s 10.8.0.0/24 -d 10.0.0.0/16 -j ACCEPT")
@@ -645,9 +645,6 @@ def start_services(net):
     ws.cmd("python3 -m http.server 80 --directory /var/www/html &>/dev/null &")
 
     fs = net.get("fs")
-
-    # 安装 vsftpd（如果宿主机有 apt 缓存，或者提前装好）
-    fs.cmd("apt-get update && apt-get install -y vsftpd 2>/dev/null || true")
 
     # 或者直接配置已有的 vsftpd
     fs.cmd("mkdir -p /var/ftp")
