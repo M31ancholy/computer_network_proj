@@ -645,20 +645,28 @@ def start_services(net):
     ws.cmd("python3 -m http.server 80 --directory /var/www/html &>/dev/null &")
 
     fs = net.get("fs")
+
+    # 安装 vsftpd（如果宿主机有 apt 缓存，或者提前装好）
+    fs.cmd("apt-get update && apt-get install -y vsftpd 2>/dev/null || true")
+
+    # 或者直接配置已有的 vsftpd
     fs.cmd("mkdir -p /var/ftp")
     fs.cmd('echo "Shared Campus FTP" > /var/ftp/welcome.txt')
-    fs.cmd(
-        'python3 -c "'
-        "from pyftpdlib.authorizers import DummyAuthorizer; "
-        "from pyftpdlib.handlers import FTPHandler; "
-        "from pyftpdlib.servers import FTPServer; "
-        'authorizer = DummyAuthorizer(); '
-        'authorizer.add_anonymous("/var/ftp"); '
-        "handler = FTPHandler; "
-        "handler.authorizer = authorizer; "
-        'server = FTPServer(("0.0.0.0", 21), handler); '
-        'server.serve_forever()" &>/dev/null &'
-    )
+
+    # 写配置文件
+    fs.cmd('''cat > /etc/vsftpd.conf << 'EOF'
+    listen=YES
+    anonymous_enable=YES
+    anon_root=/var/ftp
+    no_anon_password=YES
+    local_enable=NO
+    write_enable=NO
+    pasv_min_port=10000
+    pasv_max_port=10100
+    EOF''')
+
+    # 启动服务
+    fs.cmd("service vsftpd restart || vsftpd /etc/vsftpd.conf &")
 
 
 # ---------------------------------------------------------------------------
