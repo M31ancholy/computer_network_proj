@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
 """
-Campus network topology - Milestone 6: DHCP
-基于 M5 双校区单臂路由拓扑，新增 DHCP 动态 IP 分配功能。
+Campus network topology - Milestone 6: DHCP + VPN
+基于 M5 双校区单臂路由拓扑，新增 DHCP 动态 IP 分配功能 + 修复 VPN 回归。
 
 架构：与 M5 相同的双校区单臂路由（Router-on-a-Stick）
 新增：
   - 在核心路由器 c 的每个 VLAN 子接口上运行独立 dnsmasq 实例（纯 DHCP 模式）
   - 所有普通终端主机（宿舍/教学/图书馆/办公/人事/财务）通过 DHCP 自动获取 IP
   - 服务器区（ws, fs）和 VPN 节点（vpn, ex）保持静态 IP
+修复（回归）：
+  - vpn 启用 ip_forward，可在 vpn-eth0 / vpn-eth1 间转发
+  - 启动 OpenVPN static-key 隧道（vpn <-> ex），外部客户端可经 VPN 访问内网
+  - iptables MASQUERADE 让 VPN 客户端流量伪装为 vpn-eth0 IP
+  - 核心路由器 c-eth1 分配 203.0.113.254/24，可参与公网侧通信
 
                 ┌──────────────────────────────────────┐
                 │           Core Router  c              │
@@ -346,8 +351,9 @@ def configure_vlan_routing(net):
         core.cmd(f"ip link set {subif} up")
         info(f"    {subif:14s}  [{desc:12s}]  gw {gw_ip}\n")
 
-    # ── 互联网/VPN 接口：c-eth1（不设 VLAN）─────────────────────────────
+    # ── 互联网/VPN 接口：c-eth1（不设 VLAN，分配公网侧 IP）────────────────────
     core.cmd("ip addr flush dev c-eth1")
+    core.cmd("ip addr add 203.0.113.254/24 dev c-eth1")
     core.cmd("ip link set c-eth1 up")
 
     # ── Campus B trunk：c-eth2 ─────────────────────────────────────────────
@@ -533,10 +539,11 @@ def get_host_ip(node):
 # 配置 VPN 服务器地址（与 M5 相同）
 # ---------------------------------------------------------------------------
 def configure_vpn_addresses(net):
-    """vpn-eth0 在 VLAN 200（A 校区），vpn-eth1 在公网侧。"""
+    """vpn-eth0 在 VLAN 200（A 校区），vpn-eth1 在公网侧。启用 ip_forward。"""
     info("*** Configuring VPN server addresses\n")
 
     vpn = net.get("vpn")
+    vpn.cmd("sysctl -w net.ipv4.ip_forward=1")
     vpn.cmd("ip addr flush dev vpn-eth0")
     vpn.cmd("ip addr add 10.0.200.10/24 dev vpn-eth0")
     vpn.cmd("ip link set vpn-eth0 up")
@@ -551,6 +558,99 @@ def configure_vpn_addresses(net):
     ex.cmd("ip addr add 203.0.113.2/24 dev ex-eth0")
     ex.cmd("ip link set ex-eth0 up")
     ex.cmd("ip route replace default via 203.0.113.1")
+
+
+# ---------------------------------------------------------------------------
+# M6 新增：启动 OpenVPN 隧道（从 M2 回归修复）
+# ---------------------------------------------------------------------------
+def start_vpn_tunnel(net):
+    """
+    在 vpn（服务端）和 ex（客户端）之间建立 OpenVPN static-key 隧道。
+
+    接口映射（与 M2 相反）：
+      vpn-eth0 = VLAN 200 内网侧（10.0.200.10）
+      vpn-eth1 = 公网侧（203.0.113.1）—— OpenVPN 监听此接口
+      ex-eth0  = 公网侧（203.0.113.2）—— OpenVPN 客户端连此
+
+    隧道地址：10.8.0.1（vpn tun0） <-> 10.8.0.2（ex tun0）
+    iptables：VPN 客户端流量 MASQUERADE 到 vpn-eth0，使内网主机看到源为 10.0.200.10。
+    """
+    info("*** Starting VPN tunnel (OpenVPN)\n")
+
+    vpn = net.get("vpn")
+    ex  = net.get("ex")
+
+    openvpn = vpn.cmd("command -v openvpn").strip()
+    if not openvpn:
+        info("!!! openvpn not found; install with: sudo apt install openvpn. Skipping tunnel.\n")
+        return False
+
+    iptables = vpn.cmd("command -v iptables").strip()
+    if not iptables:
+        info("!!! iptables not found on vpn; skipping VPN iptables rules.\n")
+        iptables = ""
+
+    vpn.cmd("pkill openvpn || true")
+    ex.cmd("pkill openvpn || true")
+    vpn.cmd("rm -f /tmp/mininet-vpn.key")
+    vpn.cmd("openvpn --genkey --secret /tmp/mininet-vpn.key")
+
+    server_config = (
+        "port 1194\n"
+        "proto udp\n"
+        "dev tun0\n"
+        "local 203.0.113.1\n"
+        "ifconfig 10.8.0.1 10.8.0.2\n"
+        "secret /tmp/mininet-vpn.key\n"
+        "cipher AES-128-CBC\n"
+        "keepalive 10 60\n"
+        "persist-key\n"
+        "persist-tun\n"
+        "verb 3\n"
+    )
+    client_config = (
+        "remote 203.0.113.1 1194\n"
+        "proto udp\n"
+        "dev tun0\n"
+        "ifconfig 10.8.0.2 10.8.0.1\n"
+        "secret /tmp/mininet-vpn.key\n"
+        "cipher AES-128-CBC\n"
+        "route 10.0.0.0 255.255.0.0\n"
+        "nobind\n"
+        "persist-key\n"
+        "persist-tun\n"
+        "verb 3\n"
+    )
+
+    vpn.cmd("rm -f /tmp/openvpn-server.conf /tmp/openvpn-server.log")
+    ex.cmd("rm -f /tmp/openvpn-client.conf /tmp/openvpn-client.log")
+    vpn.cmd(f"python3 -c \"from pathlib import Path; Path('/tmp/openvpn-server.conf').write_text({server_config!r})\"")
+    ex.cmd(f"python3 -c \"from pathlib import Path; Path('/tmp/openvpn-client.conf').write_text({client_config!r})\"")
+    key_data = vpn.cmd("python3 -c \"from pathlib import Path; print(Path('/tmp/mininet-vpn.key').read_text(), end='')\"")
+    ex.cmd(f"python3 -c \"from pathlib import Path; Path('/tmp/mininet-vpn.key').write_text({key_data!r})\"")
+
+    if iptables:
+        vpn.cmd(f"{iptables} -F")
+        vpn.cmd(f"{iptables} -t nat -F")
+        vpn.cmd(f"{iptables} -P FORWARD ACCEPT")
+        vpn.cmd(f"{iptables} -t nat -A POSTROUTING -s 10.8.0.0/24 -d 10.0.0.0/8 -o vpn-eth0 -j MASQUERADE")
+        vpn.cmd(f"{iptables} -A FORWARD -i tun0 -o vpn-eth0 -s 10.8.0.0/24 -d 10.0.0.0/8 -j ACCEPT")
+        vpn.cmd(f"{iptables} -A FORWARD -i vpn-eth0 -o tun0 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT")
+
+    vpn.cmd("openvpn --config /tmp/openvpn-server.conf --daemon --log /tmp/openvpn-server.log")
+    time.sleep(1)
+    ex.cmd("openvpn --config /tmp/openvpn-client.conf --daemon --log /tmp/openvpn-client.log")
+    time.sleep(3)
+
+    tun_check = vpn.cmd("ip addr show tun0 2>/dev/null").strip()
+    if "10.8.0.1" in tun_check:
+        info("  VPN tunnel established: vpn tun0=10.8.0.1 <-> ex tun0=10.8.0.2\n")
+    else:
+        info("  [WARN] VPN tunnel may not be up; check logs:\n")
+        info(f"    vpn: cat /tmp/openvpn-server.log\n")
+        info(f"    ex:  cat /tmp/openvpn-client.log\n")
+
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -799,6 +899,32 @@ def test_connectivity(net):
         r = bo1.cmd(f"ping -c 2 -W 2 {ip_afn1}")
         info(f"[ACL]  bo1 (B-Office) -> afn1 ({ip_afn1}): {'OK' if '0%' in r else 'FAIL'}\n")
 
+    # ── 12. VPN 连通性 ───────────────────────────────────────────────────────
+    vpn = net.get("vpn")
+    ex  = net.get("ex")
+
+    r = ad1.cmd("ping -c 2 -W 2 10.0.200.10")
+    info(f"[VPN]  ad1 -> vpn-eth0 (10.0.200.10):  {'OK' if '0%' in r else 'FAIL'}\n")
+
+    r = ex.cmd("ping -c 2 -W 2 203.0.113.1")
+    info(f"[VPN]  ex -> vpn-eth1 (203.0.113.1):   {'OK' if '0%' in r else 'FAIL'}\n")
+
+    r = vpn.cmd("ping -c 2 -W 2 203.0.113.2")
+    info(f"[VPN]  vpn -> ex (203.0.113.2):        {'OK' if '0%' in r else 'FAIL'}\n")
+
+    tun0_out = vpn.cmd("ip addr show tun0 2>/dev/null").strip()
+    if "10.8.0.1" in tun0_out:
+        r = ex.cmd("ping -c 2 -W 2 10.8.0.1")
+        info(f"[VPN]  ex -> vpn tunnel (10.8.0.1): {'OK' if '0%' in r else 'FAIL'}\n")
+
+        r = ex.cmd("curl -s --connect-timeout 3 http://10.0.100.10")
+        info(f"[VPN]  ex via VPN -> Web server:     {'OK' if 'Web Server' in r else 'FAIL'}\n")
+
+        r = ex.cmd("curl -s --connect-timeout 3 ftp://10.0.100.20/welcome.txt")
+        info(f"[VPN]  ex via VPN -> FTP welcome:    {'OK' if 'Shared Campus FTP' in r else 'FAIL'}\n")
+    else:
+        info("[VPN]  Tunnel not up; skipping VPN-through-tunnel tests\n")
+
 
 # ---------------------------------------------------------------------------
 # 主函数
@@ -831,29 +957,32 @@ def run():
         # 3. 【M6 新增】在路由器 c 上为每个 VLAN 子接口启动 dnsmasq DHCP 服务
         start_dhcp_servers(net)
 
-        # 4. 配置 VPN 和外部客户端静态地址（同 M5）
+        # 4. 配置 VPN 和外部客户端静态地址（修复 ip_forward）
         configure_vpn_addresses(net)
 
-        # 5. 【M6 新增】在终端主机上启动 dhcpcd，等待动态 IP 分配完成
+        # 5. 【M6 修复】启动 OpenVPN 隧道
+        vpn_up = start_vpn_tunnel(net)
+
+        # 6. 【M6 新增】在终端主机上启动 dhcpcd，等待动态 IP 分配完成
         configure_dhcp_clients(net)
 
-        # 6. 启动 Web/FTP 服务（同 M5）
+        # 7. 启动 Web/FTP 服务（同 M5）
         start_services(net)
 
-        # 7. 配置 iptables ACL（同 M5，按网段规则，与动态 IP 无关）
+        # 8. 配置 iptables ACL（同 M5，按网段规则，与动态 IP 无关）
         configure_acl(net)
 
-        # 8. 启动 Darkstat 流量监控（同 M5）
+        # 9. 启动 Darkstat 流量监控（同 M5）
         start_darkstat(net)
 
-        # 9. 连通性测试（M6 改版：动态读 IP）
+        # 10. 连通性测试（M6 改版：动态读 IP + VPN 测试）
         test_connectivity(net)
 
-        info("\n*** Entering Mininet CLI (M6 - DHCP enabled)\n")
+        info("\n*** Entering Mininet CLI (M6 - DHCP + VPN enabled)\n")
         info("Network layout:\n")
         info("  Campus A (s1, 10.0.x.x):  ad1-ad3  at1-at2  al1  ao1-ao2  ahr1-ahr2  afn1-afn2  [DHCP]\n")
         info("  Campus B (s2, 10.1.x.x):  bd1-bd2  bt1-bt2  bl1  bo1-bo2              [DHCP]\n")
-        info("  Static:  ws=10.0.100.10  fs=10.0.100.20  vpn=10.0.200.10\n")
+        info("  Static:  ws=10.0.100.10  fs=10.0.100.20  vpn=10.0.200.10/203.0.113.1\n")
         info("DHCP pool range: .50 - .150 per VLAN subnet\n")
         info("Useful commands:\n")
         info("  ad1 ip addr              # show DHCP-assigned IP\n")
@@ -861,8 +990,15 @@ def run():
         info("  c cat /tmp/m6-dhcp-c_eth0_10.leases  # view DHCP leases for A-Dorm\n")
         info("  ad1 ping 10.1.10.254     # A->B gateway\n")
         info("  ad1 ping <bd1-ip>        # A->B cross-campus (get ip via: bd1 ip addr)\n")
-        info("  bd1 curl http://10.0.100.10  # B-campus access shared server\n")
+        info("  bd1 curl http://10.0.100.10  # B-campus access shared Web server\n")
+        info("  ad1 curl ftp://10.0.100.20/welcome.txt  # A-campus access shared FTP\n")
         info("  c iptables -vnL FORWARD --line-numbers  # view ACL rules\n")
+        info("  VPN demo:\n")
+        info("    ex ping 203.0.113.1          # external -> VPN public IP\n")
+        info("    ex ping 10.8.0.1             # external -> VPN tunnel endpoint\n")
+        info("    ex curl http://10.0.100.10    # external via VPN -> internal Web\n")
+        info("    vpn iptables -vnL FORWARD     # VPN NAT/forward rules\n")
+        info("    vpn cat /tmp/openvpn-server.log  # VPN tunnel status\n")
         info("  exit\n\n")
 
         CLI(net)
@@ -894,6 +1030,17 @@ def run():
             "  kill $(cat /tmp/mininet-m6-darkstat.pid) 2>/dev/null || true; "
             "  rm -f /tmp/mininet-m6-darkstat.pid; fi"
         )
+
+        # 停止 VPN 隧道（vpn 和 ex 上的 openvpn 进程）
+        try:
+            vpn = net.get("vpn")
+            ex  = net.get("ex")
+            vpn.cmd("pkill openvpn 2>/dev/null || true")
+            ex.cmd("pkill openvpn 2>/dev/null || true")
+            vpn.cmd("rm -f /tmp/mininet-vpn.key /tmp/openvpn-server.conf /tmp/openvpn-server.log")
+            ex.cmd("rm -f /tmp/mininet-vpn.key /tmp/openvpn-client.conf /tmp/openvpn-client.log")
+        except Exception:
+            pass
 
         # 删除 VLAN 子接口
         for vlan_id in CAMPUS_A_VLANS:
