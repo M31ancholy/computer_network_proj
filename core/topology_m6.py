@@ -638,12 +638,32 @@ COMMAND_ERRORS = {
 def start_services(net):
     """在共享服务器区启动 Web 和 FTP 服务。"""
     info("*** Starting network services (Web + FTP)\n")
-    #
-    # ws = net.get("ws")
-    # ws.cmd("mkdir -p /var/www/html")
-    # ws.cmd('echo "<h1>Shared Campus Web Server</h1>" > /var/www/html/index.html')
-    # ws.cmd("python3 -m http.server 80 --directory /var/www/html &>/dev/null &")
-    #
+
+    info("*** Starting Web service\n")
+    ws = net.get("ws")
+    # 准备 Web 根目录和首页
+    ws.cmd("mkdir -p /var/www/html")
+    ws.cmd(
+        "printf '%s\\n' "
+        "'<html>' "
+        "'<head><title>Campus Web Server</title></head>' "
+        "'<body>' "
+        "'<h1>Shared Campus Web Server</h1>' "
+        "'<p>This is a simple Python HTTP server.</p>' "
+        "'</body>' "
+        "'</html>' "
+        "> /var/www/html/index.html"
+    )
+    # 清理可能残留的 http.server 进程
+    ws.cmd("pkill -f 'python3 -m http.server' 2>/dev/null")
+    # 启动 Python 内置 HTTP 服务，监听 80 端口
+    ws.cmd("python3 -m http.server 80 --directory /var/www/html > /tmp/web.log 2>&1 &")
+    # 打印检查信息
+    info("*** Web server process:\n")
+    info(ws.cmd("pgrep -a -f 'python3 -m http.server'"))
+
+
+
     info("*** Starting FTP service\n")
     fs = net.get("fs")
 
