@@ -67,4 +67,10 @@ sudo ip link set s1 up
 1. 实现VPN 外部接入
 2. 对于c（主核心路由节点），配置了darkstat 监控流量
 3. 添加VLAN
-4. 添加了b校区 现在有a,b两个校区
+4. 添加了b校区 现在有a
+
+技术实现：
+1. ip link add 来实现 网卡的创建
+2. 打开ip forward 来实现Linux的路由功能
+3. 在每个网卡上 添加DHCP服务器
+4. 
