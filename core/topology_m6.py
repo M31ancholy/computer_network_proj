@@ -553,6 +553,84 @@ def configure_vpn_addresses(net):
     ex.cmd("ip route replace default via 203.0.113.1")
 
 
+
+    openvpn = vpn.cmd("command -v openvpn").strip()
+    if not openvpn:
+        info("!!! Missing openvpn; install it with: sudo apt install openvpn. Skipping tunnel startup.\n")
+        return False
+
+    iptables = require_cmd(vpn, "iptables", "install it with: sudo apt install iptables")
+    vpn.cmd("sysctl -w net.ipv4.ip_forward=1")
+    vpn.cmd("pkill openvpn || true")
+    ex.cmd("pkill openvpn || true")
+    vpn.cmd("rm -f /tmp/mininet-vpn.key")
+    vpn.cmd("openvpn --genkey --secret /tmp/mininet-vpn.key")
+
+    server_config = (
+        "port 1194\n"
+        "proto udp\n"
+        "dev tun0\n"
+        "local 203.0.113.1\n"
+        "ifconfig 10.8.0.1 10.8.0.2\n"
+        "secret /tmp/mininet-vpn.key\n"
+        "cipher AES-128-CBC\n"
+        "keepalive 10 60\n"
+        "persist-key\n"
+        "persist-tun\n"
+        "verb 3\n"
+    )
+    client_config = (
+        "remote 203.0.113.1 1194\n"
+        "proto udp\n"
+        "dev tun0\n"
+        "ifconfig 10.8.0.2 10.8.0.1\n"
+        "secret /tmp/mininet-vpn.key\n"
+        "cipher AES-128-CBC\n"
+        "route 10.0.0.0 255.255.0.0\n"
+        "nobind\n"
+        "persist-key\n"
+        "persist-tun\n"
+        "verb 3\n"
+    )
+
+    vpn.cmd("rm -f /tmp/openvpn-server.conf /tmp/openvpn-server.log")
+    ex.cmd("rm -f /tmp/openvpn-client.conf /tmp/openvpn-client.log")
+    vpn.cmd(f"python3 -c \"from pathlib import Path; Path('/tmp/openvpn-server.conf').write_text({server_config!r})\"")
+    ex.cmd(f"python3 -c \"from pathlib import Path; Path('/tmp/openvpn-client.conf').write_text({client_config!r})\"")
+    key_data = vpn.cmd("python3 -c \"from pathlib import Path; print(Path('/tmp/mininet-vpn.key').read_text(), end='')\"")
+    ex.cmd(f"python3 -c \"from pathlib import Path; Path('/tmp/mininet-vpn.key').write_text({key_data!r})\"")
+
+    # 内网和公网似乎反了
+    vpn.cmd(f"{iptables} -F")
+    vpn.cmd(f"{iptables} -t nat -F")
+    vpn.cmd(f"{iptables} -P FORWARD ACCEPT")
+    vpn.cmd(f"{iptables} -t nat -A POSTROUTING -s 10.8.0.0/24 -d 10.0.0.0/16 -o vpn-eth0 -j MASQUERADE")
+    vpn.cmd(f"{iptables} -A FORWARD -i tun0 -o vpn-eth0 -s 10.8.0.0/24 -d 10.0.0.0/16 -j ACCEPT")
+    vpn.cmd(f"{iptables} -A FORWARD -i vpn-eth0 -o tun0 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT")
+
+    vpn.cmd("openvpn --config /tmp/openvpn-server.conf --daemon --log /tmp/openvpn-server.log")
+    time.sleep(1)
+    ex.cmd("openvpn --config /tmp/openvpn-client.conf --daemon --log /tmp/openvpn-client.log")
+    time.sleep(3)
+    return True
+
+def require_cmd(node, command, install_hint):
+    """Return a command path or fail loudly instead of silently skipping ACLs."""
+    lookup = COMMAND_CHECKS.get(command, f"command -v {command}")
+    path = node.cmd(lookup).strip()
+    if not path:
+        raise RuntimeError(COMMAND_ERRORS.get(command, f"Missing {command}; {install_hint}"))
+    return path
+
+COMMAND_CHECKS = {
+    "iptables": "command -v iptables",
+    "openvpn": "command -v openvpn",
+}
+COMMAND_ERRORS = {
+    "iptables": "Missing iptables; install it with: sudo apt install iptables",
+}
+
+
 # ---------------------------------------------------------------------------
 # 启动服务（与 M5 相同）
 # ---------------------------------------------------------------------------
